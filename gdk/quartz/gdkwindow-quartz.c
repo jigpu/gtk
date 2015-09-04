@@ -22,6 +22,7 @@
 #include <gdk/gdk.h>
 #include <gdk/gdkdeviceprivate.h>
 #include <gdk/gdkdisplayprivate.h>
+#include <gdk/gdkframeclockprivate.h>
 
 #include "gdkwindowimpl.h"
 #include "gdkprivate-quartz.h"
@@ -776,6 +777,46 @@ get_nsscreen_for_point (gint x, gint y)
   return screen;
 }
 
+static void
+frame_callback (GdkDisplay *display,
+                GdkWindow  *window,
+                gint64      refresh_interval,
+                gint64      now,
+                gint64      presentation_time)
+{
+  GdkFrameClock *frame_clock;
+  GdkFrameTimings *timings;
+
+  frame_clock = gdk_window_get_frame_clock (window);
+  if (frame_clock == NULL)
+    return;
+
+  _gdk_frame_clock_thaw (frame_clock);
+
+  timings = gdk_frame_clock_get_current_timings (frame_clock);
+  if (timings == NULL)
+    return;
+
+  timings->refresh_interval = refresh_interval;
+  timings->presentation_time = presentation_time;
+}
+
+static void
+on_frame_clock_before_paint (GdkFrameClock *frame_clock,
+                             GdkWindow     *window)
+{
+}
+
+static void
+on_frame_clock_after_paint (GdkFrameClock *frame_clock,
+                            GdkWindow     *window)
+{
+  GdkDisplay *display = gdk_window_get_display (window);
+
+  _gdk_quartz_display_add_frame_callback (display, frame_callback, window);
+  _gdk_frame_clock_freeze (frame_clock);
+}
+
 void
 _gdk_quartz_display_create_window_impl (GdkDisplay    *display,
                                         GdkWindow     *window,
@@ -787,6 +828,7 @@ _gdk_quartz_display_create_window_impl (GdkDisplay    *display,
 {
   GdkWindowImplQuartz *impl;
   GdkWindowImplQuartz *parent_impl;
+  GdkFrameClock *frame_clock;
 
   GDK_QUARTZ_ALLOC_POOL;
 
@@ -921,6 +963,13 @@ _gdk_quartz_display_create_window_impl (GdkDisplay    *display,
 
   if (attributes_mask & GDK_WA_TYPE_HINT)
     gdk_window_set_type_hint (window, attributes->type_hint);
+
+  frame_clock = gdk_window_get_frame_clock (window);
+
+  g_signal_connect (frame_clock, "before-paint",
+                    G_CALLBACK (on_frame_clock_before_paint), window);
+  g_signal_connect (frame_clock, "after-paint",
+                    G_CALLBACK (on_frame_clock_after_paint), window);
 }
 
 void

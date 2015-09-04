@@ -20,12 +20,14 @@
 
 #include <gdk/gdk.h>
 #include <gdk/gdkdisplayprivate.h>
+#include <gdk/gdkframeclockprivate.h>
 
 #include "gdkprivate-quartz.h"
 #include "gdkquartzscreen.h"
 #include "gdkquartzwindow.h"
 #include "gdkquartzdisplay.h"
 #include "gdkquartzdevicemanager-core.h"
+#include "gdkdisplaylinksource.h"
 
 
 struct _GdkQuartzDisplay
@@ -33,12 +35,21 @@ struct _GdkQuartzDisplay
   GdkDisplay display;
 
   GList *input_devices;
+
+  GSource *frame_source;
+  GArray  *frame_handlers;
 };
 
 struct _GdkQuartzDisplayClass
 {
   GdkDisplayClass display_class;
 };
+
+typedef struct
+{
+  GdkQuartzFrameCallback callback;
+  GdkWindow *window;
+} FrameHandler;
 
 static GdkWindow *
 gdk_quartz_display_get_default_group (GdkDisplay *display)
@@ -108,6 +119,107 @@ gdk_quartz_display_init_input (GdkDisplay *display)
   g_list_free (list);
 }
 
+void
+_gdk_quartz_display_add_frame_callback (GdkDisplay             *display,
+                                        GdkQuartzFrameCallback  callback,
+                                        GdkWindow              *window)
+{
+  GdkQuartzDisplay *display_quartz;
+  FrameHandler handler;
+
+  display_quartz = GDK_QUARTZ_DISPLAY (display);
+
+  handler.callback = callback;
+  handler.window = window;
+
+  if (display_quartz->frame_handlers == NULL)
+    display_quartz->frame_handlers = g_array_new (FALSE, FALSE, sizeof (FrameHandler));
+
+  g_array_append_val (display_quartz->frame_handlers, handler);
+
+  if (display_quartz->frame_handlers->len == 1)
+    gdk_display_link_source_unpause ((GdkDisplayLinkSource *)display_quartz->frame_source);
+}
+
+void
+_gdk_quartz_display_remove_frame_callback (GdkDisplay             *display,
+                                           GdkQuartzFrameCallback  callback,
+                                           GdkWindow              *window)
+{
+  GdkQuartzDisplay *display_quartz;
+  gint i;
+
+  display_quartz = GDK_QUARTZ_DISPLAY (display);
+
+  for (i = 0; i < display_quartz->frame_handlers->len; i++)
+    {
+      FrameHandler *handler = &g_array_index (display_quartz->frame_handlers, FrameHandler, i);
+
+      if ((handler->window == window) && (handler->callback == callback))
+        {
+          g_array_remove_index_fast (display_quartz->frame_handlers, i);
+          break;
+        }
+    }
+
+  if (display_quartz->frame_handlers->len == 0)
+    gdk_display_link_source_pause ((GdkDisplayLinkSource *)display_quartz->frame_source);
+}
+
+static gboolean
+gdk_quartz_display_frame_cb (gpointer data)
+{
+  GdkDisplayLinkSource *source;
+  GdkQuartzDisplay *display_quartz = data;
+  GdkDisplay *display = data;
+  GArray *frame_handlers;
+  gint64 presentation_time;
+  gint64 now;
+  guint i;
+
+  source = (GdkDisplayLinkSource *)display_quartz->frame_source;
+
+  frame_handlers = display_quartz->frame_handlers;
+  display_quartz->frame_handlers = NULL;
+
+  if (frame_handlers == NULL)
+    {
+      gdk_display_link_source_pause (source);
+      return G_SOURCE_CONTINUE;
+    }
+
+  presentation_time = source->presentation_time;
+  now = g_source_get_time (display_quartz->frame_source);
+
+  for (i = 0; i < frame_handlers->len; i++)
+    {
+      FrameHandler *handler = &g_array_index (frame_handlers, FrameHandler, i);
+
+      handler->callback (display,
+                         handler->window,
+                         source->refresh_interval,
+                         now,
+                         source->presentation_time);
+    }
+
+  g_array_unref (frame_handlers);
+
+  return G_SOURCE_CONTINUE;
+}
+
+static void
+gdk_quartz_display_init_display_link (GdkDisplay *display)
+{
+  GdkQuartzDisplay *display_quartz = GDK_QUARTZ_DISPLAY (display);
+
+  display_quartz->frame_source = gdk_display_link_source_new ();
+  g_source_set_callback (display_quartz->frame_source,
+                         gdk_quartz_display_frame_cb,
+                         display,
+                         NULL);
+  g_source_attach (display_quartz->frame_source, NULL);
+}
+
 GdkDisplay *
 _gdk_quartz_display_open (const gchar *display_name)
 {
@@ -128,6 +240,8 @@ _gdk_quartz_display_open (const gchar *display_name)
   _gdk_quartz_events_init ();
 
   gdk_quartz_display_init_input (_gdk_display);
+
+  gdk_quartz_display_init_display_link (_gdk_display);
 
 #if 0
   /* FIXME: Remove the #if 0 when we have these functions */
@@ -283,6 +397,9 @@ gdk_quartz_display_finalize (GObject *object)
   GdkQuartzDisplay *display_quartz = GDK_QUARTZ_DISPLAY (object);
 
   g_list_free_full (display_quartz->input_devices, g_object_unref);
+
+  g_source_unref (display_quartz->frame_source);
+  g_clear_pointer (&display_quartz->frame_handlers, g_array_unref);
 
   G_OBJECT_CLASS (gdk_quartz_display_parent_class)->finalize (object);
 }

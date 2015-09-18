@@ -84,7 +84,9 @@
  * on Win32 doesn’t allow to embed arbitrary widgets.
  *
  * GtkStatusIcon has been deprecated in 3.14. You should consider using
- * notifications or more modern platform-specific APIs instead.
+ * notifications or more modern platform-specific APIs instead. GLib provides
+ * the #GNotification API which works well with #GtkApplication. Also see this
+ * [HowDoI](https://wiki.gnome.org/HowDoI/GNotification).
  */
 
 
@@ -691,6 +693,24 @@ button_callback (gpointer data)
 
 static UINT taskbar_created_msg = 0;
 static GSList *status_icons = NULL;
+static UINT status_icon_id = 0;
+
+static GtkStatusIcon *
+find_status_icon (UINT id)
+{
+  GSList *rover;
+
+  for (rover = status_icons; rover != NULL; rover = rover->next)
+    {
+      GtkStatusIcon *status_icon = GTK_STATUS_ICON (rover->data);
+      GtkStatusIconPrivate *priv = status_icon->priv;
+
+      if (priv->nid.uID == id)
+        return status_icon;
+    }
+
+  return NULL;
+}
 
 static LRESULT CALLBACK
 wndproc (HWND   hwnd,
@@ -708,7 +728,7 @@ wndproc (HWND   hwnd,
 	  GtkStatusIconPrivate *priv = status_icon->priv;
 
 	  priv->nid.hWnd = hwnd;
-	  priv->nid.uID = GPOINTER_TO_UINT (status_icon);
+	  priv->nid.uID = status_icon_id++;
 	  priv->nid.uCallbackMessage = WM_GTK_TRAY_NOTIFICATION;
 	  priv->nid.uFlags = NIF_MESSAGE;
 
@@ -752,7 +772,7 @@ wndproc (HWND   hwnd,
 	buttondown0:
 	  bc = g_new (ButtonCallbackData, 1);
 	  bc->event = (GdkEventButton *) gdk_event_new (GDK_BUTTON_PRESS);
-	  bc->status_icon = GTK_STATUS_ICON (wparam);
+	  bc->status_icon = find_status_icon (wparam);
 	  build_button_event (bc->status_icon->priv, bc->event, button);
 	  g_idle_add (button_callback, bc);
 	  break;
@@ -778,7 +798,7 @@ wndproc (HWND   hwnd,
 	buttonup0:
 	  bc = g_new (ButtonCallbackData, 1);
 	  bc->event = (GdkEventButton *) gdk_event_new (GDK_BUTTON_RELEASE);
-	  bc->status_icon = GTK_STATUS_ICON (wparam);
+	  bc->status_icon = find_status_icon (wparam);
 	  build_button_event (bc->status_icon->priv, bc->event, button);
 	  g_idle_add (button_callback, bc);
 	  break;
@@ -925,7 +945,7 @@ gtk_status_icon_init (GtkStatusIcon *status_icon)
   memset (&priv->nid, 0, sizeof (priv->nid));
 
   priv->nid.hWnd = create_tray_observer ();
-  priv->nid.uID = GPOINTER_TO_UINT (status_icon);
+  priv->nid.uID = status_icon_id++;
   priv->nid.uCallbackMessage = WM_GTK_TRAY_NOTIFICATION;
   priv->nid.uFlags = NIF_MESSAGE;
 
@@ -2179,8 +2199,8 @@ gtk_status_icon_is_embedded (GtkStatusIcon *status_icon)
 /**
  * gtk_status_icon_position_menu:
  * @menu: the #GtkMenu
- * @x: (out): return location for the x position
- * @y: (out): return location for the y position
+ * @x: (inout): return location for the x position
+ * @y: (inout): return location for the y position
  * @push_in: (out): whether the first menu item should be offset
  *           (pushed in) to be aligned with the menu popup position
  *           (only useful for GtkOptionMenu).

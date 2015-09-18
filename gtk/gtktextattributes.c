@@ -50,6 +50,7 @@
 #include "config.h"
 
 #include "gtktextattributes.h"
+#include "gtktextattributesprivate.h"
 #include "gtktexttagprivate.h"
 
 /**
@@ -142,6 +143,9 @@ G_GNUC_END_IGNORE_DEPRECATIONS
   if (dest->appearance.rgba[1])
     gdk_rgba_free (dest->appearance.rgba[1]);
 
+  if (dest->font_features)
+    g_free (dest->font_features);
+
   /* Copy */
   orig_refcount = dest->refcount;
 
@@ -169,13 +173,16 @@ G_GNUC_END_IGNORE_DEPRECATIONS
   if (src->appearance.rgba[1])
     dest->appearance.rgba[1] = gdk_rgba_copy (src->appearance.rgba[1]);
 
+  if (src->font_features)
+    dest->font_features = g_strdup (src->font_features);
+
   dest->refcount = orig_refcount;
 }
 
 /**
  * gtk_text_attributes_ref:
  * @values: a #GtkTextAttributes
- * 
+ *
  * Increments the reference count on @values.
  *
  * Returns: the #GtkTextAttributes that were passed in
@@ -226,6 +233,9 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 
       if (values->appearance.rgba[1])
 	gdk_rgba_free (values->appearance.rgba[1]);
+
+      if (values->font_features)
+        g_free (values->font_features);
 
       g_slice_free (GtkTextAttributes, values);
     }
@@ -363,8 +373,26 @@ G_GNUC_END_IGNORE_DEPRECATIONS
       if (tag->priv->underline_set)
         dest->appearance.underline = vals->appearance.underline;
 
+      if (GTK_TEXT_APPEARANCE_GET_UNDERLINE_RGBA_SET (&vals->appearance))
+        {
+          GdkRGBA rgba;
+
+          GTK_TEXT_APPEARANCE_GET_UNDERLINE_RGBA (&vals->appearance, &rgba);
+          GTK_TEXT_APPEARANCE_SET_UNDERLINE_RGBA (&dest->appearance, &rgba);
+          GTK_TEXT_APPEARANCE_SET_UNDERLINE_RGBA_SET (&dest->appearance, TRUE);
+        }
+
       if (tag->priv->strikethrough_set)
         dest->appearance.strikethrough = vals->appearance.strikethrough;
+
+      if (GTK_TEXT_APPEARANCE_GET_STRIKETHROUGH_RGBA_SET (&vals->appearance))
+        {
+          GdkRGBA rgba;
+
+          GTK_TEXT_APPEARANCE_GET_STRIKETHROUGH_RGBA (&vals->appearance, &rgba);
+          GTK_TEXT_APPEARANCE_SET_STRIKETHROUGH_RGBA (&dest->appearance, &rgba);
+          GTK_TEXT_APPEARANCE_SET_STRIKETHROUGH_RGBA_SET (&dest->appearance, TRUE);
+        }
 
       if (tag->priv->invisible_set)
         dest->invisible = vals->invisible;
@@ -383,6 +411,9 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 
       if (tag->priv->letter_spacing_set)
         dest->letter_spacing = vals->letter_spacing;
+
+      if (tag->priv->font_features_set)
+        dest->font_features = g_strdup (vals->font_features);
 
       ++n;
     }
@@ -411,6 +442,7 @@ _gtk_text_tag_affects_size (GtkTextTag *tag)
     priv->underline_set ||
     priv->wrap_mode_set ||
     priv->invisible_set ||
+    priv->font_features_set ||
     priv->letter_spacing_set;
 }
 
@@ -425,5 +457,7 @@ _gtk_text_tag_affects_nonsize_appearance (GtkTextTag *tag)
     priv->strikethrough_set ||
     priv->bg_full_height_set ||
     priv->pg_bg_color_set ||
-    priv->fallback_set;
+    priv->fallback_set ||
+    GTK_TEXT_APPEARANCE_GET_UNDERLINE_RGBA_SET (&priv->values->appearance) ||
+    GTK_TEXT_APPEARANCE_GET_STRIKETHROUGH_RGBA_SET (&priv->values->appearance);
 }

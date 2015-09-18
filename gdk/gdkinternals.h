@@ -213,7 +213,9 @@ struct _GdkWindow
 
   GList *filters;
   GList *children;
+  GList children_list_node;
   GList *native_children;
+
 
   cairo_pattern_t *background;
 
@@ -315,6 +317,7 @@ struct _GdkWindow
   guint8 fullscreen_mode;
 
   guint input_only : 1;
+  guint pass_through : 1;
   guint modal_hint : 1;
   guint composited : 1;
   guint has_alpha_background : 1;
@@ -334,6 +337,7 @@ struct _GdkWindow
   guint in_update : 1;
   guint geometry_dirty : 1;
   guint event_compression : 1;
+  guint frame_clock_events_paused : 1;
 
   /* The GdkWindow that has the impl, ref:ed if another window.
    * This ref is required to keep the wrapper of the impl window alive

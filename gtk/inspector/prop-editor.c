@@ -1177,7 +1177,7 @@ attribute_editor (GObject                *object,
 
   box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 10);
   gtk_container_add (GTK_CONTAINER (box), gtk_label_new (_("Model:")));
-  text = g_strdup_printf (_("%p (%s)"), model, g_type_name (G_TYPE_FROM_INSTANCE (model)));
+  text = g_strdup_printf (_("%p (%s)"), model, model ? g_type_name (G_TYPE_FROM_INSTANCE (model)) : "null" );
   gtk_container_add (GTK_CONTAINER (box), gtk_label_new (text));
   g_free (text);
   button = gtk_button_new_with_label (_("Properties"));
@@ -1591,6 +1591,14 @@ constructed (GObject *object)
 
   can_modify = ((spec->flags & G_PARAM_WRITABLE) != 0 &&
                 (spec->flags & G_PARAM_CONSTRUCT_ONLY) == 0);
+
+  /*
+   * By reaching this, we already know the property is readable.
+   * Since all we can do for a GObject is dive down into it's properties and
+   * inspect bindings and such, pretend to be mutable.
+   */
+  if (g_type_is_a (spec->value_type, G_TYPE_OBJECT))
+    can_modify = TRUE;
 
   if (!can_modify)
     return;

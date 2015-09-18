@@ -20,7 +20,7 @@
 #include "gtkprivate.h"
 #include "gtkcssvalueprivate.h"
 
-#include "gtkcsscomputedvaluesprivate.h"
+#include "gtkcssstyleprivate.h"
 #include "gtkstyleproviderprivate.h"
 
 struct _GtkCssValue {
@@ -48,7 +48,7 @@ _gtk_css_value_ref (GtkCssValue *value)
 {
   gtk_internal_return_val_if_fail (value != NULL, NULL);
 
-  g_atomic_int_add (&value->ref_count, 1);
+  value->ref_count += 1;
 
   return value;
 }
@@ -59,7 +59,8 @@ _gtk_css_value_unref (GtkCssValue *value)
   if (value == NULL)
     return;
 
-  if (!g_atomic_int_dec_and_test (&value->ref_count))
+  value->ref_count -= 1;
+  if (value->ref_count > 0)
     return;
 
   value->class->free (value);
@@ -72,9 +73,6 @@ _gtk_css_value_unref (GtkCssValue *value)
  * @provider: Style provider for looking up extra information
  * @values: values to compute for
  * @parent_values: parent values to use for inherited values
- * @dependencies: (out) (allow-none): Set to the dependencies of the
- *     computed values that indicate when this value needs to be
- *     recomputed and how.
  *
  * Converts the specified @value into the computed value for the CSS
  * property given by @property_id using the information in @context.
@@ -87,23 +85,16 @@ GtkCssValue *
 _gtk_css_value_compute (GtkCssValue             *value,
                         guint                    property_id,
                         GtkStyleProviderPrivate *provider,
-			int                      scale,
-                        GtkCssComputedValues    *values,
-                        GtkCssComputedValues    *parent_values,
-                        GtkCssDependencies      *dependencies)
+                        GtkCssStyle             *style,
+                        GtkCssStyle             *parent_style)
 {
-  GtkCssDependencies fallback;
 
   gtk_internal_return_val_if_fail (value != NULL, NULL);
   gtk_internal_return_val_if_fail (GTK_IS_STYLE_PROVIDER_PRIVATE (provider), NULL);
-  gtk_internal_return_val_if_fail (GTK_IS_CSS_COMPUTED_VALUES (values), NULL);
-  gtk_internal_return_val_if_fail (parent_values == NULL || GTK_IS_CSS_COMPUTED_VALUES (parent_values), NULL);
+  gtk_internal_return_val_if_fail (GTK_IS_CSS_STYLE (style), NULL);
+  gtk_internal_return_val_if_fail (parent_style == NULL || GTK_IS_CSS_STYLE (parent_style), NULL);
 
-  if (dependencies == NULL)
-    dependencies = &fallback;
-  *dependencies = 0;
-
-  return value->class->compute (value, property_id, provider, scale, values, parent_values, dependencies);
+  return value->class->compute (value, property_id, provider, style, parent_style);
 }
 
 gboolean

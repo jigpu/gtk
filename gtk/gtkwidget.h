@@ -66,7 +66,6 @@ typedef enum
 typedef struct _GtkWidgetPrivate       GtkWidgetPrivate;
 typedef struct _GtkWidgetClass	       GtkWidgetClass;
 typedef struct _GtkWidgetClassPrivate  GtkWidgetClassPrivate;
-typedef struct _GtkWidgetAuxInfo       GtkWidgetAuxInfo;
 
 /**
  * GtkAllocation:
@@ -609,25 +608,6 @@ struct _GtkWidgetClass
   void (*_gtk_reserved7) (void);
 };
 
-/**
- * GtkWidgetAuxInfo:
- * @width: the widget’s width
- * @height: the widget’s height
- * @halign: the widget’s horizontal alignment
- * @valign: the widget’s horizontal alignment
- * @margin: the widget’s #GtkBorder margins
- *
- */
-struct _GtkWidgetAuxInfo
-{
-  gint width;
-  gint height;
-
-  guint   halign : 4;
-  guint   valign : 4;
-
-  GtkBorder margin;
-};
 
 GDK_AVAILABLE_IN_ALL
 GType	   gtk_widget_get_type		  (void) G_GNUC_CONST;
@@ -1178,6 +1158,11 @@ GDK_AVAILABLE_IN_ALL
 PangoContext *gtk_widget_create_pango_context (GtkWidget   *widget);
 GDK_AVAILABLE_IN_ALL
 PangoContext *gtk_widget_get_pango_context    (GtkWidget   *widget);
+GDK_AVAILABLE_IN_3_18
+void gtk_widget_set_font_options (GtkWidget                  *widget,
+                                  const cairo_font_options_t *options);
+GDK_AVAILABLE_IN_3_18
+const cairo_font_options_t *gtk_widget_get_font_options (GtkWidget *widget);
 GDK_AVAILABLE_IN_ALL
 PangoLayout  *gtk_widget_create_pango_layout  (GtkWidget   *widget,
 					       const gchar *text);
@@ -1476,11 +1461,17 @@ void    gtk_widget_class_bind_template_child_full       (GtkWidgetClass        *
 						         gssize                 struct_offset);
 
 GDK_AVAILABLE_IN_3_16
-GActionGroup           *gtk_widget_get_action_group                     (GtkWidget    *widget,
-                                                                         const gchar  *prefix);
+GActionGroup           *gtk_widget_get_action_group     (GtkWidget             *widget,
+                                                         const gchar           *prefix);
 
 GDK_AVAILABLE_IN_3_16
-const gchar **          gtk_widget_list_action_prefixes                 (GtkWidget    *widget);
+const gchar **          gtk_widget_list_action_prefixes (GtkWidget             *widget);
+
+GDK_AVAILABLE_IN_3_18
+void                    gtk_widget_set_font_map         (GtkWidget             *widget,
+                                                         PangoFontMap          *font_map);
+GDK_AVAILABLE_IN_3_18
+PangoFontMap *          gtk_widget_get_font_map         (GtkWidget             *widget);
 
 G_END_DECLS
 

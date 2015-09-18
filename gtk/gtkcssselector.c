@@ -36,7 +36,7 @@ struct _GtkCssSelectorClass {
   void              (* print)       (const GtkCssSelector       *selector,
                                      GString                    *string);
   /* NULL or an iterator that calls func with each submatcher of @matcher.
-   * Potentially no submatcher exissts.
+   * Potentially no submatcher exists.
    * If any @invocation of @func returns %TRUE, the function will immediately
    * return %TRUE itself. If @func never returns %TRUE (or isn't called at all),
    * %FALSE will be returned.
@@ -141,8 +141,26 @@ gtk_css_selector_tree_get_matches (const GtkCssSelectorTree *tree)
 }
 
 static void
-gtk_css_selector_tree_found_match (const GtkCssSelectorTree *tree,
-				   GHashTable *res)
+g_ptr_array_insert_sorted (GPtrArray *array,
+                           gpointer   data)
+{
+  gint i;
+
+  for (i = 0; i < array->len; i++)
+    {
+      if (data == array->pdata[i])
+        return;
+
+      if (data < array->pdata[i])
+        break;
+    }
+
+  g_ptr_array_insert (array, i, data);
+}
+
+static void
+gtk_css_selector_tree_found_match (const GtkCssSelectorTree  *tree,
+				   GPtrArray                **array)
 {
   int i;
   gpointer *matches;
@@ -150,8 +168,11 @@ gtk_css_selector_tree_found_match (const GtkCssSelectorTree *tree,
   matches = gtk_css_selector_tree_get_matches (tree);
   if (matches)
     {
+      if (!*array)
+        *array = g_ptr_array_sized_new (16);
+
       for (i = 0; matches[i] != NULL; i++)
-	g_hash_table_insert (res, matches[i], matches[i]);
+        g_ptr_array_insert_sorted (*array, matches[i]);
     }
 }
 
@@ -725,15 +746,19 @@ gtk_css_selector_region_get_change (const GtkCssSelector *selector, GtkCssChange
   return previous_change | GTK_CSS_CHANGE_REGION;
 }
 
-static guint
+static inline guint
 count_bits (guint n)
 {
+#if defined(__GNUC__)
+  return (guint) __builtin_popcount (n);
+#else
   guint result = 0;
 
   for (result = 0; n != 0; result++)
     n &= n - 1;
 
   return result;
+#endif
 }
 
 static void
@@ -750,20 +775,19 @@ gtk_css_selector_region_add_specificity (const GtkCssSelector *selector,
 static guint
 gtk_css_selector_region_hash_one (const GtkCssSelector *a)
 {
-  return g_str_hash (a->region.name) ^ a->region.flags;
+  return GPOINTER_TO_UINT (a->region.name) ^ a->region.flags;
 }
 
 static int
 gtk_css_selector_region_compare_one (const GtkCssSelector *a,
 				     const GtkCssSelector *b)
 {
-  int diff;
-
-  diff = strcmp (a->region.name, b->region.name);
-  if (diff)
-    return diff;
-
-  return a->region.flags - b->region.flags;
+  if (a->region.name < b->region.name)
+    return -1;
+  else if (a->region.name > b->region.name)
+    return 1;
+  else
+    return a->region.flags - b->region.flags;
 }
 
 static const GtkCssSelectorClass GTK_CSS_SELECTOR_REGION = {
@@ -798,15 +822,19 @@ match_class (const GtkCssSelector *selector,
 static guint
 hash_class (const GtkCssSelector *a)
 {
-  return g_str_hash (g_quark_to_string (a->style_class.style_class));
+  return a->style_class.style_class;
 }
 
 static int
 comp_class (const GtkCssSelector *a,
             const GtkCssSelector *b)
 {
-  return strcmp (g_quark_to_string (a->style_class.style_class),
-		 g_quark_to_string (b->style_class.style_class));
+  if (a->style_class.style_class < b->style_class.style_class)
+    return -1;
+  if (a->style_class.style_class > b->style_class.style_class)
+    return 1;
+  else
+    return 0;
 }
 
 DEFINE_SIMPLE_SELECTOR(class, CLASS, print_class, match_class, hash_class, comp_class, FALSE, TRUE, FALSE)
@@ -831,14 +859,19 @@ match_id (const GtkCssSelector *selector,
 static guint
 hash_id (const GtkCssSelector *a)
 {
-  return g_str_hash (a->id.name);
+  return GPOINTER_TO_UINT (a->id.name);
 }
 
 static int
 comp_id (const GtkCssSelector *a,
 	 const GtkCssSelector *b)
 {
-  return strcmp (a->id.name, b->id.name);
+  if (a->id.name < b->id.name)
+    return -1;
+  else if (a->id.name > b->id.name)
+    return 1;
+  else
+    return 0;
 }
 
 DEFINE_SIMPLE_SELECTOR(id, ID, print_id, match_id, hash_id, comp_id, TRUE, FALSE, FALSE)
@@ -1036,7 +1069,31 @@ comp_pseudoclass_position (const GtkCssSelector *a,
   return a->position.b - b->position.b;
 }
 
-#define GTK_CSS_CHANGE_PSEUDOCLASS_POSITION GTK_CSS_CHANGE_POSITION
+static GtkCssChange
+change_pseudoclass_position (const GtkCssSelector *selector)
+{
+  switch (selector->position.type)
+    {
+    case POSITION_FORWARD:
+      if (selector->position.a == 0 && selector->position.b == 1)
+        return GTK_CSS_CHANGE_FIRST_CHILD;
+      else
+        return GTK_CSS_CHANGE_NTH_CHILD;
+    case POSITION_BACKWARD:
+      if (selector->position.a == 0 && selector->position.b == 1)
+        return GTK_CSS_CHANGE_LAST_CHILD;
+      else
+        return GTK_CSS_CHANGE_NTH_LAST_CHILD;
+    case POSITION_ONLY:
+      return GTK_CSS_CHANGE_FIRST_CHILD | GTK_CSS_CHANGE_LAST_CHILD;
+    default:
+      g_assert_not_reached ();
+    case POSITION_SORTED:
+      return 0;
+    }
+}
+
+#define GTK_CSS_CHANGE_PSEUDOCLASS_POSITION change_pseudoclass_position(selector)
 DEFINE_SIMPLE_SELECTOR(pseudoclass_position, PSEUDOCLASS_POSITION, print_pseudoclass_position,
                        match_pseudoclass_position, hash_pseudoclass_position, comp_pseudoclass_position,
                        FALSE, TRUE, FALSE)
@@ -1691,18 +1748,6 @@ gtk_css_selectors_skip_initial_selector (GtkCssSelector *selector, const GtkCssS
   return (GtkCssSelector *)gtk_css_selector_previous (selector);
 }
 
-static int
-direct_ptr_compare (const void *_a, const void *_b)
-{
-  gpointer *a = (gpointer *)_a;
-  gpointer *b = (gpointer *)_b;
-  if (*a < *b)
-    return -1;
-  else if (*a == *b)
-    return 0;
-  return 1;
-}
-
 static gboolean
 gtk_css_selector_tree_match_foreach (const GtkCssSelector *selector,
                                      const GtkCssMatcher  *matcher,
@@ -1728,28 +1773,13 @@ GPtrArray *
 _gtk_css_selector_tree_match_all (const GtkCssSelectorTree *tree,
 				  const GtkCssMatcher *matcher)
 {
-  GHashTable *res;
-  GPtrArray *array;
-  GHashTableIter iter;
-  gpointer key;
+  GPtrArray *array = NULL;
 
   update_type_references ();
 
-  res = g_hash_table_new (g_direct_hash, g_direct_equal);
-
   for (; tree != NULL;
        tree = gtk_css_selector_tree_get_sibling (tree))
-    gtk_css_selector_foreach (&tree->selector, matcher, gtk_css_selector_tree_match_foreach, res);
-
-  array = g_ptr_array_sized_new (g_hash_table_size (res));
-
-  g_hash_table_iter_init (&iter, res);
-  while (g_hash_table_iter_next (&iter, &key, NULL))
-    g_ptr_array_add (array, key);
-
-  g_hash_table_destroy (res);
-
-  qsort (array->pdata, array->len, sizeof (gpointer), direct_ptr_compare);
+    gtk_css_selector_foreach (&tree->selector, matcher, gtk_css_selector_tree_match_foreach, &array);
 
   return array;
 }

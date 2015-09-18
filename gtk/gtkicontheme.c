@@ -264,7 +264,8 @@ struct _GtkIconInfo
 
   SymbolicPixbufCache *symbolic_pixbuf_cache;
 
-  gint symbolic_size;
+  gint symbolic_width;
+  gint symbolic_height;
 };
 
 typedef struct
@@ -315,8 +316,9 @@ typedef struct
 typedef struct 
 {
   gchar *dir;
-  time_t mtime; /* 0 == not existing or not a dir */
+  time_t mtime;
   GtkIconCache *cache;
+  gboolean exists;
 } IconThemeDirMtime;
 
 static void         gtk_icon_theme_finalize   (GObject          *object);
@@ -1133,10 +1135,13 @@ insert_theme (GtkIconTheme *icon_theme,
       dir_mtime = g_slice_new (IconThemeDirMtime);
       dir_mtime->cache = NULL;
       dir_mtime->dir = path;
-      if (g_stat (path, &stat_buf) == 0 && S_ISDIR (stat_buf.st_mode))
+      if (g_stat (path, &stat_buf) == 0 && S_ISDIR (stat_buf.st_mode)) {
         dir_mtime->mtime = stat_buf.st_mtime;
-      else
+        dir_mtime->exists = TRUE;
+      } else {
         dir_mtime->mtime = 0;
+        dir_mtime->exists = FALSE;
+      }
 
       priv->dir_mtimes = g_list_prepend (priv->dir_mtimes, dir_mtime);
     }
@@ -1153,8 +1158,7 @@ insert_theme (GtkIconTheme *icon_theme,
         {
           theme_file = g_key_file_new ();
           g_key_file_set_list_separator (theme_file, ',');
-          g_key_file_load_from_file (theme_file, path, 0, &error);
-          if (error)
+          if (!g_key_file_load_from_file (theme_file, path, 0, &error))
             {
               g_key_file_free (theme_file);
               theme_file = NULL;
@@ -1370,11 +1374,13 @@ load_themes (GtkIconTheme *icon_theme)
       
       dir_mtime->dir = g_strdup (dir);
       dir_mtime->mtime = 0;
+      dir_mtime->exists = FALSE;
       dir_mtime->cache = NULL;
 
       if (g_stat (dir, &stat_buf) != 0 || !S_ISDIR (stat_buf.st_mode))
         continue;
       dir_mtime->mtime = stat_buf.st_mtime;
+      dir_mtime->exists = TRUE;
 
       dir_mtime->cache = _gtk_icon_cache_new_for_path (dir);
       if (dir_mtime->cache != NULL)
@@ -1831,7 +1837,6 @@ real_choose_icon (GtkIconTheme       *icon_theme,
       static gboolean check_for_default_theme = TRUE;
       gchar *default_theme_path;
       gboolean found = FALSE;
-      guint i;
 
       if (check_for_default_theme)
         {
@@ -2714,12 +2719,12 @@ rescan_themes (GtkIconTheme *icon_theme)
       stat_res = g_stat (dir_mtime->dir, &stat_buf);
 
       /* dir mtime didn't change */
-      if (stat_res == 0 &&
+      if (stat_res == 0 && dir_mtime->exists &&
           S_ISDIR (stat_buf.st_mode) &&
           dir_mtime->mtime == stat_buf.st_mtime)
         continue;
       /* didn't exist before, and still doesn't */
-      if (dir_mtime->mtime == 0 &&
+      if (!dir_mtime->exists &&
           (stat_res != 0 || !S_ISDIR (stat_buf.st_mode)))
         continue;
 
@@ -3314,7 +3319,7 @@ theme_subdir_load (GtkIconTheme *icon_theme,
     {
       dir_mtime = (IconThemeDirMtime *)d->data;
 
-      if (dir_mtime->mtime == 0)
+      if (!dir_mtime->exists)
         continue; /* directory doesn't exist */
 
       full_dir = g_build_filename (dir_mtime->dir, subdir, NULL);
@@ -3463,7 +3468,8 @@ icon_info_dup (GtkIconInfo *icon_info)
   dup->is_resource = icon_info->is_resource;
   dup->min_size = icon_info->min_size;
   dup->max_size = icon_info->max_size;
-  dup->symbolic_size = icon_info->symbolic_size;
+  dup->symbolic_width = icon_info->symbolic_width;
+  dup->symbolic_height = icon_info->symbolic_height;
 
   return dup;
 }
@@ -3859,7 +3865,7 @@ icon_info_ensure_scale_and_pixbuf (GtkIconInfo *icon_info)
         {
           gint size;
 
-          if (icon_info->forced_size)
+          if (icon_info->forced_size || icon_info->dir_type == ICON_THEME_DIR_UNTHEMED)
             size = scaled_desired_size;
           else
             size = icon_info->dir_size * dir_scale * icon_info->scale;
@@ -3889,7 +3895,7 @@ icon_info_ensure_scale_and_pixbuf (GtkIconInfo *icon_info)
             {
               gint size;
 
-              if (icon_info->forced_size)
+              if (icon_info->forced_size || icon_info->dir_type == ICON_THEME_DIR_UNTHEMED)
                 size = scaled_desired_size;
               else
                 size = icon_info->dir_size * dir_scale * icon_info->scale;
@@ -4091,7 +4097,7 @@ load_icon_thread  (GTask        *task,
 {
   GtkIconInfo *dup = task_data;
 
-  icon_info_ensure_scale_and_pixbuf (dup);
+  (void)icon_info_ensure_scale_and_pixbuf (dup);
   g_task_return_pointer (task, NULL, NULL);
 }
 
@@ -4402,9 +4408,11 @@ gtk_icon_info_load_symbolic_svg (GtkIconInfo    *icon_info,
   gchar *css_warning;
   gchar *css_error;
   gchar *data;
-  gchar *size;
+  gchar *width;
+  gchar *height;
   gchar *file_data, *escaped_file_data;
   gsize file_len;
+  gint symbolic_size;
   double alpha;
   gchar alphastr[G_ASCII_DTOSTR_BUF_SIZE];
 
@@ -4435,7 +4443,8 @@ gtk_icon_info_load_symbolic_svg (GtkIconInfo    *icon_info,
   if (!icon_info_ensure_scale_and_pixbuf (icon_info))
     return NULL;
 
-  if (icon_info->symbolic_size == 0)
+  if (icon_info->symbolic_width == 0 ||
+      icon_info->symbolic_height == 0)
     {
       /* Fetch size from the original icon */
       stream = g_memory_input_stream_new_from_data (file_data, file_len, NULL);
@@ -4445,20 +4454,26 @@ gtk_icon_info_load_symbolic_svg (GtkIconInfo    *icon_info,
       if (!pixbuf)
         return NULL;
 
-      icon_info->symbolic_size = MAX (gdk_pixbuf_get_width (pixbuf), gdk_pixbuf_get_height (pixbuf));
+      icon_info->symbolic_width = gdk_pixbuf_get_width (pixbuf);
+      icon_info->symbolic_height = gdk_pixbuf_get_height (pixbuf);
       g_object_unref (pixbuf);
     }
 
-  if (icon_info->dir_type == ICON_THEME_DIR_UNTHEMED)
-    g_warning ("Symbolic icon %s is not in an icon theme directory",
-               icon_info->key.icon_names ? icon_info->key.icon_names[0] : icon_info->filename);
-  else if (icon_info->dir_size * icon_info->dir_scale != icon_info->symbolic_size)
-    g_warning ("Symbolic icon %s of size %d is in an icon theme directory of size %d",
-               icon_info->key.icon_names ? icon_info->key.icon_names[0] : icon_info->filename,
-               icon_info->symbolic_size,
-               icon_info->dir_size * icon_info->dir_scale);
+  symbolic_size = MAX (icon_info->symbolic_width, icon_info->symbolic_height);
 
-  size = g_strdup_printf ("%d", icon_info->symbolic_size);
+  GTK_NOTE (ICONTHEME,
+  if (icon_info->dir_type == ICON_THEME_DIR_UNTHEMED)
+    g_print ("Symbolic icon %s is not in an icon theme directory",
+             icon_info->key.icon_names ? icon_info->key.icon_names[0] : icon_info->filename);
+  else if (icon_info->dir_size * icon_info->dir_scale != symbolic_size)
+    g_print ("Symbolic icon %s of size %d is in an icon theme directory of size %d",
+             icon_info->key.icon_names ? icon_info->key.icon_names[0] : icon_info->filename,
+             symbolic_size,
+             icon_info->dir_size * icon_info->dir_scale)
+  );
+
+  width = g_strdup_printf ("%d", icon_info->symbolic_width);
+  height = g_strdup_printf ("%d", icon_info->symbolic_height);
 
   escaped_file_data = g_markup_escape_text (file_data, file_len);
   g_free (file_data);
@@ -4469,8 +4484,8 @@ gtk_icon_info_load_symbolic_svg (GtkIconInfo    *icon_info,
                       "<svg version=\"1.1\"\n"
                       "     xmlns=\"http://www.w3.org/2000/svg\"\n"
                       "     xmlns:xi=\"http://www.w3.org/2001/XInclude\"\n"
-                      "     width=\"", size, "\"\n"
-                      "     height=\"", size, "\">\n"
+                      "     width=\"", width, "\"\n"
+                      "     height=\"", height, "\">\n"
                       "  <style type=\"text/css\">\n"
                       "    rect,path {\n"
                       "      fill: ", css_fg," !important;\n"
@@ -4493,7 +4508,8 @@ gtk_icon_info_load_symbolic_svg (GtkIconInfo    *icon_info,
   g_free (css_warning);
   g_free (css_error);
   g_free (css_success);
-  g_free (size);
+  g_free (width);
+  g_free (height);
 
   stream = g_memory_input_stream_new_from_data (data, -1, g_free);
   pixbuf = gdk_pixbuf_new_from_stream_at_scale (stream,
@@ -5449,7 +5465,21 @@ gtk_icon_theme_lookup_by_gicon_for_scale (GtkIconTheme       *icon_theme,
           if (file != NULL)
             {
               info->icon_file = g_object_ref (file);
-              info->filename = g_file_get_path (file);
+              info->is_resource = g_file_has_uri_scheme (file, "resource");
+
+              if (info->is_resource)
+                {
+                  gchar *uri;
+
+                  uri = g_file_get_uri (file);
+                  info->filename = g_strdup (uri + 11); /* resource:// */
+                  g_free (uri);
+                }
+              else
+                {
+                  info->filename = g_file_get_path (file);
+                }
+
               info->is_svg = suffix_from_name (info->filename) == ICON_SUFFIX_SVG;
             }
         }

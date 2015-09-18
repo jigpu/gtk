@@ -26,13 +26,100 @@
 #include "gdkwin32window.h"
 #include "gdkwin32.h"
 
-#define HAVE_MONITOR_INFO
+/**
+ * gdk_win32_display_set_cursor_theme:
+ * @display: (type GdkWin32Display): a #GdkDisplay
+ * @theme: (allow-none) the name of the cursor theme to use, or %NULL to unset
+ *         a previously set value
+ * @size: the cursor size to use, or 0 to keep the previous size
+ *
+ * Sets the cursor theme from which the images for cursor
+ * should be taken.
+ *
+ * If the windowing system supports it, existing cursors created
+ * with gdk_cursor_new(), gdk_cursor_new_for_display() and
+ * gdk_cursor_new_from_name() are updated to reflect the theme
+ * change. Custom cursors constructed with
+ * gdk_cursor_new_from_pixbuf() will have to be handled
+ * by the application (GTK+ applications can learn about
+ * cursor theme changes by listening for change notification
+ * for the corresponding #GtkSetting).
+ *
+ * Since: 3.18
+ */
+void
+gdk_win32_display_set_cursor_theme (GdkDisplay  *display,
+                                    const gchar *name,
+                                    const gint   size)
+{
+  gint cursor_size;
+  gint w, h;
+  Win32CursorTheme *theme;
+  GdkWin32Display *win32_display = GDK_WIN32_DISPLAY (display);
 
-#if defined(_MSC_VER) && (WINVER < 0x500) && (WINVER > 0x0400)
-#include <multimon.h>
-#elif defined(_MSC_VER) && (WINVER <= 0x0400)
-#undef HAVE_MONITOR_INFO
-#endif
+  g_assert (win32_display);
+
+  if (name == NULL)
+    name = "system";
+
+  w = GetSystemMetrics (SM_CXCURSOR);
+  h = GetSystemMetrics (SM_CYCURSOR);
+
+  /* We can load cursors of any size, but SetCursor() will scale them back
+   * to this value. It's possible to break that restrictions with SetSystemCursor(),
+   * but that will override cursors for the whole desktop session.
+   */
+  cursor_size = (w == h) ? w : size;
+
+  if (win32_display->cursor_theme_name != NULL &&
+      g_strcmp0 (name, win32_display->cursor_theme_name) == 0 &&
+      win32_display->cursor_theme_size == cursor_size)
+    return;
+
+  theme = win32_cursor_theme_load (name, cursor_size);
+  if (theme == NULL)
+    {
+      g_warning ("Failed to load cursor theme %s", name);
+      return;
+    }
+
+  if (win32_display->cursor_theme)
+    {
+      win32_cursor_theme_destroy (win32_display->cursor_theme);
+      win32_display->cursor_theme = NULL;
+    }
+
+  win32_display->cursor_theme = theme;
+  g_free (win32_display->cursor_theme_name);
+  win32_display->cursor_theme_name = g_strdup (name);
+  win32_display->cursor_theme_size = cursor_size;
+
+  _gdk_win32_display_update_cursors (win32_display);
+}
+
+Win32CursorTheme *
+_gdk_win32_display_get_cursor_theme (GdkWin32Display *win32_display)
+{
+  Win32CursorTheme *theme;
+
+  g_assert (win32_display->cursor_theme_name);
+
+  theme = win32_display->cursor_theme;
+  if (!theme)
+    {
+      theme = win32_cursor_theme_load (win32_display->cursor_theme_name,
+                                       win32_display->cursor_theme_size);
+      if (theme == NULL)
+        {
+          g_warning ("Failed to load cursor theme %s",
+                     win32_display->cursor_theme_name);
+          return NULL;
+        }
+      win32_display->cursor_theme = theme;
+    }
+
+  return theme;
+}
 
 static gulong
 gdk_win32_display_get_next_serial (GdkDisplay *display)
@@ -40,7 +127,6 @@ gdk_win32_display_get_next_serial (GdkDisplay *display)
 	return 0;
 }
 
-#ifdef HAVE_MONITOR_INFO
 static BOOL CALLBACK
 count_monitor (HMONITOR hmonitor,
 	       HDC      hdc,
@@ -116,12 +202,10 @@ enum_monitor (HMONITOR hmonitor,
 
   return TRUE;
 }
-#endif /* HAVE_MONITOR_INFO */
 
 void
 _gdk_monitor_init (void)
 {
-#ifdef HAVE_MONITOR_INFO
   gint i, index;
 
   _gdk_num_monitors = 0;
@@ -156,24 +240,6 @@ _gdk_monitor_init (void)
 			       _gdk_monitors[i].rect.x,
 			       _gdk_monitors[i].rect.y));
     }
-#else
-  HDC hDC;
-
-  _gdk_num_monitors = 1;
-  _gdk_monitors = g_renew (GdkWin32Monitor, _gdk_monitors, 1);
-
-  _gdk_monitors[0].name = g_strdup ("DISPLAY");
-  hDC = GetDC (NULL);
-  _gdk_monitors[0].width_mm = GetDeviceCaps (hDC, HORZSIZE);
-  _gdk_monitors[0].height_mm = GetDeviceCaps (hDC, VERTSIZE);
-  ReleaseDC (NULL, hDC);
-  _gdk_monitors[0].rect.x = 0;
-  _gdk_monitors[0].rect.y = 0;
-  _gdk_monitors[0].rect.width = GetSystemMetrics (SM_CXSCREEN);
-  _gdk_monitors[0].rect.height = GetSystemMetrics (SM_CYSCREEN);
-  _gdk_offset_x = 0;
-  _gdk_offset_y = 0;
-#endif
 }
 
 GdkDisplay *
@@ -341,9 +407,7 @@ inner_clipboard_window_procedure (HWND   hwnd,
 
         return 0;
       }
-#ifdef WM_CLIPBOARDUPDATE
     case WM_CLIPBOARDUPDATE:
-#endif
     case WM_DRAWCLIPBOARD:
       {
         int success;
@@ -355,7 +419,12 @@ inner_clipboard_window_procedure (HWND   hwnd,
         GdkWindow *owner;
 
         success = OpenClipboard (hwnd);
-        g_return_val_if_fail (success, 0);
+        if (!success)
+          {
+            g_warning ("Failed to OpenClipboard on window handle %p", hwnd);
+            return 0;
+          }
+
         hwndOwner = GetClipboardOwner ();
         owner = gdk_win32_window_lookup_for_display (_gdk_display, hwndOwner);
         if (owner == NULL)
@@ -464,7 +533,7 @@ failed:
   return NULL;
 }
 
-static gboolean 
+static gboolean
 gdk_win32_display_request_selection_notification (GdkDisplay *display,
 						  GdkAtom     selection)
 
@@ -511,7 +580,7 @@ gdk_win32_display_store_clipboard (GdkDisplay    *display,
 {
 }
 
-static gboolean 
+static gboolean
 gdk_win32_display_supports_shapes (GdkDisplay *display)
 {
   g_return_val_if_fail (GDK_IS_DISPLAY (display), FALSE);
@@ -567,11 +636,17 @@ gdk_win32_display_dispose (GObject *object)
 static void
 gdk_win32_display_finalize (GObject *object)
 {
+  GdkWin32Display *display_win32 = GDK_WIN32_DISPLAY (object);
+
+  _gdk_win32_display_finalize_cursors (display_win32);
+
+  G_OBJECT_CLASS (gdk_win32_display_parent_class)->finalize (object);
 }
 
 static void
-gdk_win32_display_init(GdkWin32Display *display)
+gdk_win32_display_init (GdkWin32Display *display)
 {
+  _gdk_win32_display_init_cursors (display);
 }
 
 static void
@@ -656,6 +731,6 @@ gdk_win32_display_class_init (GdkWin32DisplayClass *klass)
   display_class->text_property_to_utf8_list = _gdk_win32_display_text_property_to_utf8_list;
   display_class->utf8_to_string_target = _gdk_win32_display_utf8_to_string_target;
   display_class->make_gl_context_current = _gdk_win32_display_make_gl_context_current;
-  
+
   _gdk_win32_windowing_init ();
 }

@@ -89,12 +89,6 @@ static const guint month_length[2][13] =
   { 0, 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
 };
 
-static const guint days_in_months[2][14] =
-{
-  { 0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365 },
-  { 0, 0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335, 366 }
-};
-
 static gboolean
 leap (guint year)
 {
@@ -1644,7 +1638,6 @@ gtk_calendar_realize (GtkWidget *widget)
   attributes.wclass = GDK_INPUT_ONLY;
   attributes.window_type = GDK_WINDOW_CHILD;
   attributes.event_mask = (gtk_widget_get_events (widget)
-                           | GDK_EXPOSURE_MASK
                            | GDK_SCROLL_MASK
                            | GDK_BUTTON_PRESS_MASK
                            | GDK_BUTTON_RELEASE_MASK

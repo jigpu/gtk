@@ -20,6 +20,7 @@
 
 #include "gtkstylecontext.h"
 
+#include "gtkcssnodeprivate.h"
 #include "gtkicontheme.h"
 #include "gtkstyleproviderprivate.h"
 #include "gtkbitmaskprivate.h"
@@ -27,33 +28,34 @@
 
 G_BEGIN_DECLS
 
-void            _gtk_style_context_set_widget                (GtkStyleContext *context,
-                                                              GtkWidget       *widget);
+GtkStyleContext *gtk_style_context_new_for_node              (GtkCssNode      *node);
+
+void            gtk_style_context_set_id                     (GtkStyleContext *context,
+                                                              const char      *id);
+const char *    gtk_style_context_get_id                     (GtkStyleContext *context);
+GtkStyleProviderPrivate *
+                gtk_style_context_get_style_provider         (GtkStyleContext *context);
+
 const GtkBitmask *
                 _gtk_style_context_get_changes               (GtkStyleContext *context);
 
+GtkCssStyle *   gtk_style_context_lookup_style               (GtkStyleContext *context);
 GtkCssValue   * _gtk_style_context_peek_property             (GtkStyleContext *context,
                                                               guint            property_id);
 const GValue * _gtk_style_context_peek_style_property        (GtkStyleContext *context,
                                                               GType            widget_type,
                                                               GParamSpec      *pspec);
-void           _gtk_style_context_validate                   (GtkStyleContext *context,
-                                                              gint64           timestamp,
-                                                              GtkCssChange     change,
-                                                              const GtkBitmask*parent_changes);
-void           _gtk_style_context_queue_invalidate           (GtkStyleContext *context,
-                                                              GtkCssChange     change);
+void            gtk_style_context_validate                   (GtkStyleContext *context,
+                                                              const GtkBitmask*changes);
+void            gtk_style_context_clear_property_cache       (GtkStyleContext *context);
 gboolean       _gtk_style_context_check_region_name          (const gchar     *str);
 
 gboolean       _gtk_style_context_resolve_color              (GtkStyleContext    *context,
                                                               GtkCssValue        *color,
-                                                              GdkRGBA            *result,
-                                                              GtkCssDependencies *dependencies);
+                                                              GdkRGBA            *result);
 void           _gtk_style_context_get_cursor_color           (GtkStyleContext    *context,
                                                               GdkRGBA            *primary_color,
                                                               GdkRGBA            *secondary_color);
-
-void           _gtk_style_context_update_animating           (GtkStyleContext    *context);
 
 void           _gtk_style_context_get_icon_extents           (GtkStyleContext    *context,
                                                               GdkRectangle       *extents,
@@ -61,7 +63,10 @@ void           _gtk_style_context_get_icon_extents           (GtkStyleContext   
                                                               gint                y,
                                                               gint                width,
                                                               gint                height);
-GtkIconLookupFlags _gtk_style_context_get_icon_lookup_flags  (GtkStyleContext    *context);
+
+gboolean       _gtk_style_context_is_background_opaque       (GtkStyleContext *context);
+
+PangoAttrList *_gtk_style_context_get_pango_attributes       (GtkStyleContext *context);
 
 /* Accessibility support */
 AtkAttributeSet *_gtk_style_context_get_attributes           (AtkAttributeSet    *attributes,

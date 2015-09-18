@@ -278,6 +278,11 @@ GDK_AVAILABLE_IN_3_12
 GdkWindow *gdk_device_get_last_event_window (GdkDevice *device);
 
 GDK_AVAILABLE_IN_3_16
+const gchar *gdk_device_get_vendor_id       (GdkDevice *device);
+GDK_AVAILABLE_IN_3_16
+const gchar *gdk_device_get_product_id      (GdkDevice *device);
+
+GDK_AVAILABLE_IN_3_16
 GType gdk_device_tool_get_type (void) G_GNUC_CONST;
 
 GDK_AVAILABLE_IN_3_16

@@ -613,6 +613,70 @@ monitor_compare_function (GdkX11Monitor *monitor1,
 }
 #endif
 
+#ifdef HAVE_RANDR15
+static gboolean
+init_randr15 (GdkScreen *screen)
+{
+  GdkDisplay *display = gdk_screen_get_display (screen);
+  GdkX11Display *display_x11 = GDK_X11_DISPLAY (display);
+  GdkX11Screen *x11_screen = GDK_X11_SCREEN (screen);
+  XRRMonitorInfo *rr_monitors;
+  int num_rr_monitors;
+  int i;
+  GArray *monitors;
+  XID primary_output = None;
+
+  if (!display_x11->have_randr15)
+    return FALSE;
+
+  rr_monitors = XRRGetMonitors (x11_screen->xdisplay,
+                                x11_screen->xroot_window,
+                                True,
+                                &num_rr_monitors);
+  if (!rr_monitors)
+    return FALSE;
+
+  monitors = g_array_sized_new (FALSE, TRUE, sizeof (GdkX11Monitor),
+                                num_rr_monitors);
+  for (i = 0; i < num_rr_monitors; i++)
+    {
+      GdkX11Monitor monitor;
+      init_monitor_geometry (&monitor,
+                             rr_monitors[i].x,
+                             rr_monitors[i].y,
+                             rr_monitors[i].width,
+                             rr_monitors[i].height);
+
+      monitor.width_mm = rr_monitors[i].mwidth;
+      monitor.height_mm = rr_monitors[i].mheight;
+      monitor.output = rr_monitors[i].outputs[0];
+      if (rr_monitors[i].primary)
+        primary_output = monitor.output;
+
+      g_array_append_val (monitors, monitor);
+    }
+  XRRFreeMonitors (rr_monitors);
+
+  g_array_sort (monitors,
+                (GCompareFunc) monitor_compare_function);
+  x11_screen->n_monitors = monitors->len;
+  x11_screen->monitors = (GdkX11Monitor *) g_array_free (monitors, FALSE);
+
+  x11_screen->primary_monitor = 0;
+
+  for (i = 0; i < x11_screen->n_monitors; i++)
+    {
+      if (x11_screen->monitors[i].output == primary_output)
+        {
+          x11_screen->primary_monitor = i;
+          break;
+        }
+    }
+
+  return x11_screen->n_monitors > 0;
+}
+#endif
+
 static gboolean
 init_randr13 (GdkScreen *screen)
 {
@@ -1060,6 +1124,11 @@ init_multihead (GdkScreen *screen)
   if (init_fake_xinerama (screen))
     return;
 
+#ifdef HAVE_RANDR15
+  if (init_randr15 (screen))
+    return;
+#endif
+
   if (init_randr13 (screen))
     return;
 
@@ -1451,7 +1520,7 @@ gdk_x11_screen_get_setting (GdkScreen   *screen,
   if (setting == NULL)
     goto out;
 
-  if (!g_value_type_transformable (G_VALUE_TYPE (setting), G_VALUE_TYPE (value)))
+  if (!g_value_transform (setting, value))
     {
       g_warning ("Cannot transform xsetting %s of type %s to type %s\n",
 		 name,
@@ -1459,8 +1528,6 @@ gdk_x11_screen_get_setting (GdkScreen   *screen,
 		 g_type_name (G_VALUE_TYPE (value)));
       goto out;
     }
-
-  g_value_transform (setting, value);
 
   return TRUE;
 

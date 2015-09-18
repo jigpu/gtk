@@ -110,6 +110,7 @@ free_monitor (gpointer data)
   if (monitor == NULL)
     return;
 
+  wl_output_destroy (monitor->output);
   g_free (monitor->output_name);
   g_free (monitor->manufacturer);
 
@@ -222,7 +223,9 @@ gdk_wayland_screen_get_monitor_width_mm	(GdkScreen *screen,
 					 gint       monitor_num)
 {
   GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
-  GdkWaylandMonitor *monitor = g_ptr_array_index(screen_wayland->monitors, monitor_num);
+  GdkWaylandMonitor *monitor;
+
+  monitor = g_ptr_array_index (screen_wayland->monitors, monitor_num);
 
   return monitor->width_mm;
 }
@@ -232,7 +235,9 @@ gdk_wayland_screen_get_monitor_height_mm (GdkScreen *screen,
 					  gint       monitor_num)
 {
   GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
-  GdkWaylandMonitor *monitor = g_ptr_array_index(screen_wayland->monitors, monitor_num);
+  GdkWaylandMonitor *monitor;
+
+  monitor = g_ptr_array_index (screen_wayland->monitors, monitor_num);
 
   return monitor->height_mm;
 }
@@ -242,7 +247,9 @@ gdk_wayland_screen_get_monitor_plug_name (GdkScreen *screen,
 					  gint       monitor_num)
 {
   GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
-  GdkWaylandMonitor *monitor = g_ptr_array_index(screen_wayland->monitors, monitor_num);
+  GdkWaylandMonitor *monitor;
+
+  monitor = g_ptr_array_index (screen_wayland->monitors, monitor_num);
 
   return g_strdup (monitor->output_name);
 }
@@ -253,7 +260,9 @@ gdk_wayland_screen_get_monitor_geometry (GdkScreen    *screen,
 					 GdkRectangle *dest)
 {
   GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
-  GdkWaylandMonitor *monitor = g_ptr_array_index(screen_wayland->monitors, monitor_num);
+  GdkWaylandMonitor *monitor;
+
+  monitor = g_ptr_array_index (screen_wayland->monitors, monitor_num);
 
   if (dest)
     *dest = monitor->geometry;
@@ -266,10 +275,7 @@ gdk_wayland_screen_get_monitor_scale_factor (GdkScreen *screen,
   GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
   GdkWaylandMonitor *monitor;
 
-  if (monitor_num >= screen_wayland->monitors->len)
-    return 1;
-
-  monitor = g_ptr_array_index(screen_wayland->monitors, monitor_num);
+  monitor = g_ptr_array_index (screen_wayland->monitors, monitor_num);
 
   return monitor->scale;
 }
@@ -295,7 +301,13 @@ gdk_wayland_screen_is_composited (GdkScreen *screen)
 static gchar *
 gdk_wayland_screen_make_display_name (GdkScreen *screen)
 {
-  return NULL;
+  const gchar *name;
+
+  name = g_getenv ("WAYLAND_DISPLAY");
+  if (name == NULL)
+    name = "wayland-0";
+
+  return g_strdup (name);
 }
 
 static GdkWindow *
@@ -357,17 +369,17 @@ typedef enum
 static gdouble
 get_dpi_from_gsettings (GdkWaylandScreen *screen_wayland)
 {
-        GSettings  *interface_settings;
-        gdouble      factor;
+  GSettings *settings;
+  gdouble factor;
 
-        interface_settings = g_hash_table_lookup (screen_wayland->settings,
-                                                  "org.gnome.desktop.interface");
-        if (interface_settings != NULL)
-          factor = g_settings_get_double (interface_settings, "text-scaling-factor");
-        else
-          factor = 1.0;
+  settings = g_hash_table_lookup (screen_wayland->settings,
+                                  "org.gnome.desktop.interface");
+  if (settings != NULL)
+    factor = g_settings_get_double (settings, "text-scaling-factor");
+  else
+    factor = 1.0;
 
-        return 96.0 * factor;
+  return 96.0 * factor;
 }
 
 static void
@@ -546,7 +558,8 @@ static TranslationEntry translations[] = {
 };
 
 static TranslationEntry *
-find_translation_entry_by_key (GSettings *settings, const gchar *key)
+find_translation_entry_by_key (GSettings   *settings,
+                               const gchar *key)
 {
   guint i;
   gchar *schema;
@@ -749,8 +762,8 @@ set_decoration_layout_from_entry (GdkScreen        *screen,
 
 static gboolean
 set_capability_setting (GdkScreen                 *screen,
-			GValue                    *value,
-			enum gtk_shell_capability  test)
+                        GValue                    *value,
+                        enum gtk_shell_capability  test)
 {
   GdkWaylandScreen *wayland_screen = GDK_WAYLAND_SCREEN (screen);
 
@@ -761,8 +774,8 @@ set_capability_setting (GdkScreen                 *screen,
 
 static gboolean
 gdk_wayland_screen_get_setting (GdkScreen   *screen,
-				const gchar *name,
-				GValue      *value)
+                                const gchar *name,
+                                GValue      *value)
 {
   TranslationEntry *entry;
 
@@ -994,35 +1007,71 @@ _gdk_wayland_screen_init (GdkWaylandScreen *screen_wayland)
 static void
 update_screen_size (GdkWaylandScreen *screen_wayland)
 {
+  gboolean emit_changed = FALSE;
   gint width, height;
+  gint width_mm, height_mm;
   gint i;
 
   width = height = 0;
+  width_mm = height_mm = 0;
   for (i = 0; i < screen_wayland->monitors->len; i++)
     {
       GdkWaylandMonitor *monitor = screen_wayland->monitors->pdata[i];
+
+      /* XXX: Largely assuming here that monitor areas
+       * are contiguous and never overlap.
+       */
+      if (monitor->geometry.x > 0)
+        width_mm += monitor->width_mm;
+      else
+        width_mm = MAX (width_mm, monitor->width_mm);
+
+      if (monitor->geometry.y > 0)
+        height_mm += monitor->height_mm;
+      else
+        height_mm = MAX (height_mm, monitor->height_mm);
 
       width = MAX (width, monitor->geometry.x + monitor->geometry.width);
       height = MAX (height, monitor->geometry.y + monitor->geometry.height);
     }
 
+  if (screen_wayland->width_mm != width_mm ||
+      screen_wayland->height_mm != height_mm)
+    {
+      emit_changed = TRUE;
+      screen_wayland->width_mm = width_mm;
+      screen_wayland->height_mm = height_mm;
+    }
+
   if (screen_wayland->width != width ||
       screen_wayland->height != height)
     {
+      emit_changed = TRUE;
       screen_wayland->width = width;
       screen_wayland->height = height;
-      g_signal_emit_by_name (screen_wayland, "size-changed");
     }
+
+  if (emit_changed)
+    g_signal_emit_by_name (screen_wayland, "size-changed");
 }
 
 static void
-output_handle_geometry(void *data,
-		       struct wl_output *wl_output,
-		       int x, int y, int physical_width, int physical_height,
-		       int subpixel, const char *make, const char *model,
-		       int32_t transform)
+output_handle_geometry (void             *data,
+                        struct wl_output *wl_output,
+                        int               x,
+                        int               y,
+                        int               physical_width,
+                        int               physical_height,
+                        int               subpixel,
+                        const char       *make,
+                        const char       *model,
+                        int32_t           transform)
 {
   GdkWaylandMonitor *monitor = (GdkWaylandMonitor *)data;
+
+  GDK_NOTE (MISC,
+            g_message ("handle geometry output %d, position %d %d, phys. size %d %d, manufacturer %s, model %s",
+                       monitor->id, x, y, physical_width, physical_height, make, model));
 
   monitor->geometry.x = x;
   monitor->geometry.y = y;
@@ -1041,35 +1090,47 @@ output_handle_geometry(void *data,
 }
 
 static void
-output_handle_done(void *data,
-		   struct wl_output *wl_output)
+output_handle_done (void             *data,
+                    struct wl_output *wl_output)
 {
   GdkWaylandMonitor *monitor = (GdkWaylandMonitor *)data;
+
+  GDK_NOTE (MISC,
+            g_message ("handle done output %d", monitor->id));
 
   g_signal_emit_by_name (monitor->screen, "monitors-changed");
   update_screen_size (monitor->screen);
 }
 
 static void
-output_handle_scale(void *data,
-		    struct wl_output *wl_output,
-		    int32_t factor)
+output_handle_scale (void             *data,
+                     struct wl_output *wl_output,
+                     int32_t           scale)
 {
   GdkWaylandMonitor *monitor = (GdkWaylandMonitor *)data;
 
-  monitor->scale = factor;
-  g_signal_emit_by_name (monitor->screen, "monitors-changed");
+  GDK_NOTE (MISC,
+            g_message ("handle scale output %d, scale %d", monitor->id, scale));
+
+  monitor->scale = scale;
+
+  if (monitor->geometry.width != 0 && monitor->version < OUTPUT_VERSION_WITH_DONE)
+    g_signal_emit_by_name (monitor->screen, "monitors-changed");
 }
 
 static void
-output_handle_mode(void *data,
-                   struct wl_output *wl_output,
-                   uint32_t flags,
-                   int width,
-                   int height,
-                   int refresh)
+output_handle_mode (void             *data,
+                    struct wl_output *wl_output,
+                    uint32_t          flags,
+                    int               width,
+                    int               height,
+                    int               refresh)
 {
   GdkWaylandMonitor *monitor = (GdkWaylandMonitor *)data;
+
+  GDK_NOTE (MISC,
+            g_message ("handle mode output %d, size %d %d, rate %d",
+                       monitor->id, width, height, refresh));
 
   if ((flags & WL_OUTPUT_MODE_CURRENT) == 0)
     return;
@@ -1100,16 +1161,28 @@ _gdk_wayland_screen_add_output (GdkScreen        *screen,
 				guint32           version)
 {
   GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
-  GdkWaylandMonitor *monitor = g_new0(GdkWaylandMonitor, 1);
+  GdkWaylandMonitor *monitor;
+
+  monitor = g_new0 (GdkWaylandMonitor, 1);
 
   monitor->id = id;
   monitor->output = output;
   monitor->version = version;
   monitor->screen = screen_wayland;
   monitor->scale = 1;
-  g_ptr_array_add(screen_wayland->monitors, monitor);
 
-  wl_output_add_listener(output, &output_listener, monitor);
+  g_ptr_array_add (screen_wayland->monitors, monitor);
+
+  wl_output_add_listener (output, &output_listener, monitor);
+}
+
+struct wl_output *
+_gdk_wayland_screen_get_wl_output (GdkScreen *screen,
+                                   gint monitor_num)
+{
+  GdkWaylandScreen *screen_wayland = GDK_WAYLAND_SCREEN (screen);
+  GdkWaylandMonitor *monitor = g_ptr_array_index (screen_wayland->monitors, monitor_num);
+  return monitor->output;
 }
 
 void

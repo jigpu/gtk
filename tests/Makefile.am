@@ -26,6 +26,10 @@ if USE_X11
 testsocket_programs = testsocket testsocket_child
 endif
 
+if OS_LINUX
+fontconfig_programs = testfontchooserdialog
+endif
+
 noinst_PROGRAMS =  $(TEST_PROGS)	\
 	overlayscroll			\
 	syncscroll			\
@@ -34,6 +38,7 @@ noinst_PROGRAMS =  $(TEST_PROGS)	\
 	animated-revealing		\
 	motion-compression		\
 	scrolling-performance		\
+	blur-performance		\
 	simple				\
 	flicker				\
 	print-editor			\
@@ -67,7 +72,8 @@ noinst_PROGRAMS =  $(TEST_PROGS)	\
 	testfontselection		\
 	testfontselectiondialog		\
 	testfontchooser			\
-	testfontchooserdialog 		\
+	testfontoptions			\
+	$(fontconfig_programs)		\
 	testframe			\
 	testfullscreen			\
 	testgeometry			\
@@ -115,6 +121,7 @@ noinst_PROGRAMS =  $(TEST_PROGS)	\
 	testtoolbar2			\
 	stresstest-toolbar		\
 	testtreechanging                \
+	testtreednd			\
 	testtreeedit			\
 	testtreemodel			\
 	testtreeview			\
@@ -160,6 +167,7 @@ noinst_PROGRAMS =  $(TEST_PROGS)	\
 	testwindowsize			\
 	testpopover			\
 	gdkgears			\
+	listmodel			\
 	$(NULL)
 
 if USE_X11
@@ -187,6 +195,7 @@ animated_revealing_DEPENDENCIES = $(TEST_DEPS)
 flicker_DEPENDENCIES = $(TEST_DEPS)
 motion_compression_DEPENDENCIES = $(TEST_DEPS)
 scrolling_performance_DEPENDENCIES = $(TEST_DEPS)
+blur_performance_DEPENDENCIES = $(TEST_DEPS)
 simple_DEPENDENCIES = $(TEST_DEPS)
 print_editor_DEPENDENCIES = $(TEST_DEPS)
 video_timer_DEPENDENCIES = $(TEST_DEPS)
@@ -218,6 +227,7 @@ testfontselection_DEPENDENCIES = $(TEST_DEPS)
 testfontselectiondialog_DEPENDENCIES = $(TEST_DEPS)
 testfontchooser_DEPENDENCIES = $(TEST_DEPS)
 testfontchooserdialog_DEPENDENCIES = $(TEST_DEPS)
+testfontoptions_DEPENDENCIES = $(TEST_DEPS)
 testframe_DEPENDENCIES = $(TEST_DEPS)
 testgeometry_DEPENDENCIES = $(TEST_DEPS)
 testgiconpixbuf = $(TEST_DEPS)
@@ -256,6 +266,7 @@ testspinbutton_DEPENDENCIES = $(TEST_DEPS)
 teststatusicon_DEPENDENCIES = $(TEST_DEPS)
 teststockbuttonmenu_DEPENDENCIES = $(TEST_DEPS)
 testtreechanging_DEPENDENCIES =	$(DEPS)
+testtreednd_DEPENDENCIES = $(DEPS)
 testtreeedit_DEPENDENCIES = $(DEPS)
 testtreemodel_DEPENDENCIES = $(DEPS)
 testtreeview_DEPENDENCIES = $(DEPS)
@@ -296,6 +307,7 @@ teststack_DEPENDENCIES = $(TEST_DEPS)
 testrevealer_DEPENDENCIES = $(TEST_DEPS)
 testtitlebar_DEPENDENCIES = $(TEST_DEPS)
 testwindowsize_DEPENDENCIES = $(TEST_DEPS)
+listmodel_DEPENDENCIES = $(TEST_DEPS)
 
 animated_resizing_SOURCES = 	\
 	animated-resizing.c	\
@@ -317,6 +329,10 @@ scrolling_performance_SOURCES = \
 	frame-stats.h		\
 	variable.c		\
 	variable.h
+
+blur_performance_SOURCES = \
+	blur-performance.c	\
+	../gtk/gtkcairoblur.c
 
 video_timer_SOURCES = 	\
 	video-timer.c	\
@@ -353,6 +369,9 @@ testfontchooser_SOURCES = \
 testfontchooserdialog_SOURCES = \
 	testfontchooserdialog.c
 
+testfontoptions_SOURCES = \
+	testfontoptions.c
+
 testgrid_SOURCES =	\
 	testgrid.c
 
@@ -361,6 +380,9 @@ testgtk_SOURCES =	\
 
 testtreechanging_SOURCES =	\
 	testtreechanging.c
+
+testtreednd_SOURCES = 	\
+	testtreednd.c
 
 testtreeedit_SOURCES = 	\
 	testtreeedit.c
@@ -517,6 +539,8 @@ testglblending_SOURCES =	\
 	testglblending.c	\
 	gtkgears.c	\
 	gtkgears.h
+
+listmodel_SOURCES = listmodel.c
 
 EXTRA_DIST += 			\
 	gradient1.png		\

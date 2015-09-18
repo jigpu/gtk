@@ -34,6 +34,7 @@
 #include "gtksizerequest.h"
 #include "gtkplug.h"
 #include "gtkprivate.h"
+#include "gtkrender.h"
 #include "gtkdnd.h"
 #include "gtkdebug.h"
 #include "gtkintl.h"
@@ -100,16 +101,14 @@
  *
  * The communication between a #GtkSocket and a #GtkPlug follows the
  * [XEmbed Protocol](http://www.freedesktop.org/Standards/xembed-spec).
- * This protocol has also been implemented in other toolkits,
- * e.g. Qt, allowing the same level of
- * integration when embedding a Qt widget
+ * This protocol has also been implemented in other toolkits, e.g. Qt,
+ * allowing the same level of integration when embedding a Qt widget
  * in GTK or vice versa.
  *
  * The #GtkPlug and #GtkSocket widgets are only available when GTK+
  * is compiled for the X11 platform and %GDK_WINDOWING_X11 is defined.
  * They can only be used on a #GdkX11Display. To use #GtkPlug and
- * #GtkSocket, you need to include the `gtk/gtkx.h`
- * header.
+ * #GtkSocket, you need to include the `gtk/gtkx.h` header.
  */
 
 /* Forward declararations */
@@ -185,6 +184,18 @@ gtk_socket_finalize (GObject *object)
   G_OBJECT_CLASS (gtk_socket_parent_class)->finalize (object);
 }
 
+static gboolean
+gtk_socket_draw (GtkWidget *widget,
+                 cairo_t   *cr)
+{
+  gtk_render_background (gtk_widget_get_style_context (widget), cr,
+                         0, 0,
+                         gtk_widget_get_allocated_width (widget),
+                         gtk_widget_get_allocated_height (widget));
+
+  return GTK_WIDGET_CLASS (gtk_socket_parent_class)->draw (widget, cr);
+}
+
 static void
 gtk_socket_class_init (GtkSocketClass *class)
 {
@@ -209,6 +220,7 @@ gtk_socket_class_init (GtkSocketClass *class)
   widget_class->key_press_event = gtk_socket_key_event;
   widget_class->key_release_event = gtk_socket_key_event;
   widget_class->focus = gtk_socket_focus;
+  widget_class->draw = gtk_socket_draw;
 
   /* We don't want to show_all the in-process plug, if any.
    */
@@ -377,8 +389,13 @@ gtk_socket_realize (GtkWidget *widget)
   GdkWindowAttr attributes;
   XWindowAttributes xattrs;
   gint attributes_mask;
+  GdkScreen *screen;
 
   gtk_widget_set_realized (widget, TRUE);
+
+  screen = gtk_widget_get_screen (widget);
+  if (!GDK_IS_X11_SCREEN (screen))
+    g_warning ("GtkSocket: only works under X11");
 
   gtk_widget_get_allocation (widget, &allocation);
 
@@ -397,9 +414,6 @@ gtk_socket_realize (GtkWidget *widget)
                            &attributes, attributes_mask);
   gtk_widget_set_window (widget, window);
   gtk_widget_register_window (widget, window);
-
-  gtk_style_context_set_background (gtk_widget_get_style_context (widget),
-                                    window);
 
   XGetWindowAttributes (GDK_WINDOW_XDISPLAY (window),
 			GDK_WINDOW_XID (window),

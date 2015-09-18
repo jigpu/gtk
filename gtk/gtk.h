@@ -184,7 +184,7 @@
 #include <gtk/gtkseparatortoolitem.h>
 #include <gtk/gtksettings.h>
 #include <gtk/gtkshow.h>
-#include <gtk/gtksidebar.h>
+#include <gtk/gtkstacksidebar.h>
 #include <gtk/gtksizegroup.h>
 #include <gtk/gtksizerequest.h>
 #include <gtk/gtkspinbutton.h>
@@ -275,6 +275,8 @@
 #include <gtk/deprecated/gtkvscrollbar.h>
 #include <gtk/deprecated/gtkvseparator.h>
 #endif /* GTK_DISABLE_DEPRECATED */
+
+#include <gtk/gtk-autocleanups.h>
 
 #undef __GTK_H_INSIDE__
 

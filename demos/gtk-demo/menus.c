@@ -18,10 +18,6 @@
  * A GtkMenuItem can have a submenu, which is simply a GtkMenu to pop
  * up when the menu item is selected. Typically, all menu items in a menu bar
  * have submenus.
- *
- * GtkUIManager provides a higher-level interface for creating menu bars
- * and menus; while you can construct menus manually, most people don't
- * do that. There's a separate demo for GtkUIManager.
  */
 
 #include <gtk/gtk.h>
@@ -30,11 +26,10 @@
 #include <stdio.h>
 
 static GtkWidget *
-create_menu (gint     depth)
+create_menu (gint depth)
 {
   GtkWidget *menu;
-  GtkWidget *menuitem;
-  GSList *group;
+  GtkRadioMenuItem *last_item;
   char buf[32];
   int i, j;
 
@@ -42,20 +37,24 @@ create_menu (gint     depth)
     return NULL;
 
   menu = gtk_menu_new ();
-  group = NULL;
+  last_item = NULL;
 
   for (i = 0, j = 1; i < 5; i++, j++)
     {
+      GtkWidget *menu_item;
+
       sprintf (buf, "item %2d - %d", depth, j);
-      menuitem = gtk_radio_menu_item_new_with_label (group, buf);
-      group = gtk_radio_menu_item_get_group (GTK_RADIO_MENU_ITEM (menuitem));
 
-      gtk_menu_shell_append (GTK_MENU_SHELL (menu), menuitem);
-      gtk_widget_show (menuitem);
+      menu_item = gtk_radio_menu_item_new_with_label_from_widget (NULL, buf);
+      gtk_radio_menu_item_join_group (GTK_RADIO_MENU_ITEM (menu_item), last_item);
+      last_item = GTK_RADIO_MENU_ITEM (menu_item);
+
+      gtk_menu_shell_append (GTK_MENU_SHELL (menu), menu_item);
+      gtk_widget_show (menu_item);
       if (i == 3)
-        gtk_widget_set_sensitive (menuitem, FALSE);
+        gtk_widget_set_sensitive (menu_item, FALSE);
 
-      gtk_menu_item_set_submenu (GTK_MENU_ITEM (menuitem), create_menu (depth - 1));
+      gtk_menu_item_set_submenu (GTK_MENU_ITEM (menu_item), create_menu (depth - 1));
     }
 
   return menu;
@@ -117,6 +116,7 @@ do_menus (GtkWidget *do_widget)
       gtk_widget_show (box1);
 
       menubar = gtk_menu_bar_new ();
+      gtk_widget_set_hexpand (menubar, TRUE);
       gtk_box_pack_start (GTK_BOX (box1), menubar, FALSE, TRUE, 0);
       gtk_widget_show (menubar);
 
@@ -158,14 +158,9 @@ do_menus (GtkWidget *do_widget)
     }
 
   if (!gtk_widget_get_visible (window))
-    {
-      gtk_widget_show (window);
-    }
+    gtk_widget_show (window);
   else
-    {
-      gtk_widget_destroy (window);
-      window = NULL;
-    }
+    gtk_widget_destroy (window);
 
   return window;
 }

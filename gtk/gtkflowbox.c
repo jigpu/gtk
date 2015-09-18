@@ -60,6 +60,8 @@
 #include "gtkprivate.h"
 #include "gtkorientableprivate.h"
 #include "gtkintl.h"
+#include "gtkcssnodeprivate.h"
+#include "gtkwidgetprivate.h"
 
 #include "a11y/gtkflowboxaccessibleprivate.h"
 #include "a11y/gtkflowboxchildaccessible.h"
@@ -81,6 +83,14 @@ static void gtk_flow_box_apply_sort          (GtkFlowBox      *box,
 static gint gtk_flow_box_sort                (GtkFlowBoxChild *a,
                                               GtkFlowBoxChild *b,
                                               GtkFlowBox      *box);
+
+static void gtk_flow_box_bound_model_changed (GListModel *list,
+                                              guint       position,
+                                              guint       removed,
+                                              guint       added,
+                                              gpointer    user_data);
+
+static void gtk_flow_box_check_model_compat  (GtkFlowBox *box);
 
 static void
 get_current_selection_modifiers (GtkWidget *widget,
@@ -793,6 +803,11 @@ struct _GtkFlowBoxPrivate {
 
   GtkScrollType      autoscroll_mode;
   guint              autoscroll_id;
+
+  GListModel                 *bound_model;
+  GtkFlowBoxCreateWidgetFunc  create_widget_func;
+  gpointer                    create_widget_func_data;
+  GDestroyNotify              create_widget_func_data_destroy;
 };
 
 #define BOX_PRIV(box) ((GtkFlowBoxPrivate*)gtk_flow_box_get_instance_private ((GtkFlowBox*)(box)))
@@ -801,7 +816,7 @@ G_DEFINE_TYPE_WITH_CODE (GtkFlowBox, gtk_flow_box, GTK_TYPE_CONTAINER,
                          G_ADD_PRIVATE (GtkFlowBox)
                          G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, NULL))
 
-/* Internal API, utilities {{{2 */
+/*  Internal API, utilities {{{2 */
 
 #define ORIENTATION_ALIGN(box)                              \
   (BOX_PRIV(box)->orientation == GTK_ORIENTATION_HORIZONTAL \
@@ -1591,21 +1606,12 @@ gtk_flow_box_size_allocate (GtkWidget     *widget,
   gint i, this_line_size;
   GSequenceIter *iter;
 
-  child_allocation.x = 0;
-  child_allocation.y = 0;
-  child_allocation.width = 0;
-  child_allocation.height = 0;
-
   gtk_widget_set_allocation (widget, allocation);
   window = gtk_widget_get_window (widget);
   if (window != NULL)
     gdk_window_move_resize (window,
                             allocation->x, allocation->y,
                             allocation->width, allocation->height);
-
-  child_allocation.x = 0;
-  child_allocation.y = 0;
-  child_allocation.width = allocation->width;
 
   min_items = MAX (1, priv->min_children_per_line);
 
@@ -1923,7 +1929,7 @@ gtk_flow_box_size_allocate (GtkWidget     *widget,
         }
 
       if (gtk_widget_get_direction (widget) == GTK_TEXT_DIR_RTL)
-        child_allocation.x = allocation->x + allocation->width - (child_allocation.x - allocation->x) - child_allocation.width;
+        child_allocation.x = allocation->width - child_allocation.x - child_allocation.width;
       gtk_widget_size_allocate (child, &child_allocation);
 
       item_offset += this_item_size;
@@ -3080,7 +3086,6 @@ gtk_flow_box_realize (GtkWidget *widget)
                                 | GDK_ENTER_NOTIFY_MASK
                                 | GDK_LEAVE_NOTIFY_MASK
                                 | GDK_POINTER_MOTION_MASK
-                                | GDK_EXPOSURE_MASK
                                 | GDK_KEY_PRESS_MASK
                                 | GDK_BUTTON_PRESS_MASK
                                 | GDK_BUTTON_RELEASE_MASK;
@@ -3090,7 +3095,6 @@ gtk_flow_box_realize (GtkWidget *widget)
                            &attributes, GDK_WA_X | GDK_WA_Y);
   gtk_widget_register_window (GTK_WIDGET (box), window);
   gtk_widget_set_window (GTK_WIDGET (box), window);
-  gtk_style_context_set_background (gtk_widget_get_style_context (GTK_WIDGET (box)), window);
 }
 
 static void
@@ -3445,7 +3449,7 @@ gtk_flow_box_move_cursor (GtkFlowBox      *box,
               while (!g_sequence_iter_is_end (iter))
                 {
                   iter = gtk_flow_box_get_next_focusable (box, iter);
-                  if (g_sequence_iter_is_end (iter))
+                  if (iter == NULL || g_sequence_iter_is_end (iter))
                     break;
 
                   next = g_sequence_get (iter);
@@ -3611,6 +3615,15 @@ gtk_flow_box_finalize (GObject *obj)
   g_object_unref (priv->drag_gesture);
   g_object_unref (priv->multipress_gesture);
 
+  if (priv->bound_model)
+    {
+      if (priv->create_widget_func_data_destroy)
+        priv->create_widget_func_data_destroy (priv->create_widget_func_data);
+
+      g_signal_handlers_disconnect_by_func (priv->bound_model, gtk_flow_box_bound_model_changed, obj);
+      g_clear_object (&priv->bound_model);
+    }
+
   G_OBJECT_CLASS (gtk_flow_box_parent_class)->finalize (obj);
 }
 
@@ -3761,7 +3774,7 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    * The ::child-activated signal is emitted when a child has been
    * activated by the user.
    */
-  signals[CHILD_ACTIVATED] = g_signal_new ("child-activated",
+  signals[CHILD_ACTIVATED] = g_signal_new (I_("child-activated"),
                                            GTK_TYPE_FLOW_BOX,
                                            G_SIGNAL_RUN_LAST,
                                            G_STRUCT_OFFSET (GtkFlowBoxClass, child_activated),
@@ -3781,7 +3794,7 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    * gtk_flow_box_get_selected_children() to obtain the
    * selected children.
    */
-  signals[SELECTED_CHILDREN_CHANGED] = g_signal_new ("selected-children-changed",
+  signals[SELECTED_CHILDREN_CHANGED] = g_signal_new (I_("selected-children-changed"),
                                                      GTK_TYPE_FLOW_BOX,
                                                      G_SIGNAL_RUN_FIRST,
                                                      G_STRUCT_OFFSET (GtkFlowBoxClass, selected_children_changed),
@@ -3797,7 +3810,7 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    * [keybinding signal][GtkBindingSignal]
    * which gets emitted when the user activates the @box.
    */
-  signals[ACTIVATE_CURSOR_CHILD] = g_signal_new ("activate-cursor-child",
+  signals[ACTIVATE_CURSOR_CHILD] = g_signal_new (I_("activate-cursor-child"),
                                                  GTK_TYPE_FLOW_BOX,
                                                  G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
                                                  G_STRUCT_OFFSET (GtkFlowBoxClass, activate_cursor_child),
@@ -3815,7 +3828,7 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    *
    * The default binding for this signal is Ctrl-Space.
    */
-  signals[TOGGLE_CURSOR_CHILD] = g_signal_new ("toggle-cursor-child",
+  signals[TOGGLE_CURSOR_CHILD] = g_signal_new (I_("toggle-cursor-child"),
                                                GTK_TYPE_FLOW_BOX,
                                                G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
                                                G_STRUCT_OFFSET (GtkFlowBoxClass, toggle_cursor_child),
@@ -3847,7 +3860,7 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    * - Home/End keys move to the ends of the box
    * - PageUp/PageDown keys move vertically by pages
    */
-  signals[MOVE_CURSOR] = g_signal_new ("move-cursor",
+  signals[MOVE_CURSOR] = g_signal_new (I_("move-cursor"),
                                        GTK_TYPE_FLOW_BOX,
                                        G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
                                        G_STRUCT_OFFSET (GtkFlowBoxClass, move_cursor),
@@ -3866,7 +3879,7 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    *
    * The default bindings for this signal is Ctrl-a.
    */
-  signals[SELECT_ALL] = g_signal_new ("select-all",
+  signals[SELECT_ALL] = g_signal_new (I_("select-all"),
                                       GTK_TYPE_FLOW_BOX,
                                       G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
                                       G_STRUCT_OFFSET (GtkFlowBoxClass, select_all),
@@ -3885,13 +3898,13 @@ gtk_flow_box_class_init (GtkFlowBoxClass *class)
    *
    * The default bindings for this signal is Ctrl-Shift-a.
    */
-  signals[UNSELECT_ALL] = g_signal_new ("unselect-all",
-                                      GTK_TYPE_FLOW_BOX,
-                                      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
-                                      G_STRUCT_OFFSET (GtkFlowBoxClass, unselect_all),
-                                      NULL, NULL,
-                                      g_cclosure_marshal_VOID__VOID,
-                                      G_TYPE_NONE, 0);
+  signals[UNSELECT_ALL] = g_signal_new (I_("unselect-all"),
+                                        GTK_TYPE_FLOW_BOX,
+                                        G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
+                                        G_STRUCT_OFFSET (GtkFlowBoxClass, unselect_all),
+                                        NULL, NULL,
+                                        g_cclosure_marshal_VOID__VOID,
+                                        G_TYPE_NONE, 0);
 
   widget_class->activate_signal = signals[ACTIVATE_CURSOR_CHILD];
 
@@ -3988,7 +4001,53 @@ gtk_flow_box_init (GtkFlowBox *box)
   g_signal_connect (priv->drag_gesture, "drag-end",
                     G_CALLBACK (gtk_flow_box_drag_gesture_end), box);
 }
- 
+
+static void
+gtk_flow_box_bound_model_changed (GListModel *list,
+                                  guint       position,
+                                  guint       removed,
+                                  guint       added,
+                                  gpointer    user_data)
+{
+  GtkFlowBox *box = user_data;
+  GtkFlowBoxPrivate *priv = BOX_PRIV (box);
+  gint i;
+
+  while (removed--)
+    {
+      GtkFlowBoxChild *child;
+
+      child = gtk_flow_box_get_child_at_index (box, position);
+      gtk_widget_destroy (GTK_WIDGET (child));
+    }
+
+  for (i = 0; i < added; i++)
+    {
+      GObject *item;
+      GtkWidget *widget;
+
+      item = g_list_model_get_item (list, position + i);
+      widget = priv->create_widget_func (item, priv->create_widget_func_data);
+
+      /* We need to sink the floating reference here, so that we can accept
+       * both instances created with a floating reference (e.g. C functions
+       * that just return the result of g_object_new()) and without (e.g.
+       * from language bindings which will automatically sink the floating
+       * reference).
+       *
+       * See the similar code in gtklistbox.c:gtk_list_box_bound_model_changed.
+       */
+      if (g_object_is_floating (widget))
+        g_object_ref_sink (widget);
+
+      gtk_widget_show (widget);
+      gtk_flow_box_insert (box, widget, position + i);
+
+      g_object_unref (widget);
+      g_object_unref (item);
+    }
+}
+
  /* Public API {{{2 */
 
 /**
@@ -4004,6 +4063,25 @@ GtkWidget *
 gtk_flow_box_new (void)
 {
   return (GtkWidget *)g_object_new (GTK_TYPE_FLOW_BOX, NULL);
+}
+
+static void
+gtk_flow_box_insert_css_node (GtkFlowBox    *box,
+                              GtkWidget     *child,
+                              GSequenceIter *iter)
+{
+  GSequenceIter *prev_iter;
+  GtkWidget *sibling;
+
+  prev_iter = g_sequence_iter_prev (iter);
+
+  if (prev_iter != iter)
+    {
+      sibling = g_sequence_get (prev_iter);
+      gtk_css_node_insert_after (gtk_widget_get_css_node (GTK_WIDGET (box)),
+                                 gtk_widget_get_css_node (child),
+                                 gtk_widget_get_css_node (sibling));
+    }
 }
 
 /**
@@ -4059,6 +4137,8 @@ gtk_flow_box_insert (GtkFlowBox *box,
       pos = g_sequence_get_iter_at_pos (priv->children, position);
       iter = g_sequence_insert_before (pos, child);
     }
+
+  gtk_flow_box_insert_css_node (box, GTK_WIDGET (child), iter);
 
   CHILD_PRIV (child)->iter = iter;
   gtk_widget_set_parent (GTK_WIDGET (child), GTK_WIDGET (box));
@@ -4164,6 +4244,81 @@ gtk_flow_box_set_vadjustment (GtkFlowBox    *box,
     g_object_unref (priv->vadjustment);
   priv->vadjustment = adjustment;
   gtk_container_set_focus_vadjustment (GTK_CONTAINER (box), adjustment);
+}
+
+static void
+gtk_flow_box_check_model_compat (GtkFlowBox *box)
+{
+  GtkFlowBoxPrivate *priv = BOX_PRIV (box);
+
+  if (priv->bound_model &&
+      (priv->sort_func || priv->filter_func))
+    g_warning ("GtkFlowBox with a model will ignore sort and filter functions");
+}
+
+/**
+ * gtk_flow_box_bind_model:
+ * @box: a #GtkFlowBox
+ * @model: (allow-none): the #GListModel to be bound to @box
+ * @create_widget_func: a function that creates widgets for items
+ * @user_data: user data passed to @create_widget_func
+ * @user_data_free_func: function for freeing @user_data
+ *
+ * Binds @model to @box.
+ *
+ * If @box was already bound to a model, that previous binding is
+ * destroyed.
+ *
+ * The contents of @box are cleared and then filled with widgets that
+ * represent items from @model. @box is updated whenever @model changes.
+ * If @model is %NULL, @box is left empty.
+ *
+ * It is undefined to add or remove widgets directly (for example, with
+ * gtk_flow_box_insert() or gtk_container_add()) while @box is bound to a
+ * model.
+ *
+ * Note that using a model is incompatible with the filtering and sorting
+ * functionality in GtkFlowBox. When using a model, filtering and sorting
+ * should be implemented by the model.
+ *
+ * Since: 3.18
+ */
+void
+gtk_flow_box_bind_model (GtkFlowBox                 *box,
+                         GListModel                 *model,
+                         GtkFlowBoxCreateWidgetFunc  create_widget_func,
+                         gpointer                    user_data,
+                         GDestroyNotify              user_data_free_func)
+{
+  GtkFlowBoxPrivate *priv = BOX_PRIV (box);
+
+  g_return_if_fail (GTK_IS_FLOW_BOX (box));
+  g_return_if_fail (model == NULL || G_IS_LIST_MODEL (model));
+  g_return_if_fail (model == NULL || create_widget_func != NULL);
+
+  if (priv->bound_model)
+    {
+      if (priv->create_widget_func_data_destroy)
+        priv->create_widget_func_data_destroy (priv->create_widget_func_data);
+
+      g_signal_handlers_disconnect_by_func (priv->bound_model, gtk_flow_box_bound_model_changed, box);
+      g_clear_object (&priv->bound_model);
+    }
+
+  gtk_flow_box_forall (GTK_CONTAINER (box), FALSE, (GtkCallback) gtk_widget_destroy, NULL);
+
+  if (model == NULL)
+    return;
+
+  priv->bound_model = g_object_ref (model);
+  priv->create_widget_func = create_widget_func;
+  priv->create_widget_func_data = user_data;
+  priv->create_widget_func_data_destroy = user_data_free_func;
+
+  gtk_flow_box_check_model_compat (box);
+
+  g_signal_connect (priv->bound_model, "items-changed", G_CALLBACK (gtk_flow_box_bound_model_changed), box);
+  gtk_flow_box_bound_model_changed (model, 0, 0, g_list_model_get_n_items (model), box);
 }
 
 /* Setters and getters {{{2 */
@@ -4692,6 +4847,9 @@ gtk_flow_box_get_selection_mode (GtkFlowBox *box)
  * gtk_flow_box_child_changed()) or when gtk_flow_box_invalidate_filter()
  * is called.
  *
+ * Note that using a filter function is incompatible with using a model
+ * (see gtk_flow_box_bind_model()).
+ *
  * Since: 3.12
  */
 void
@@ -4712,6 +4870,8 @@ gtk_flow_box_set_filter_func (GtkFlowBox           *box,
   priv->filter_func = filter_func;
   priv->filter_data = user_data;
   priv->filter_destroy = destroy;
+
+  gtk_flow_box_check_model_compat (box);
 
   gtk_flow_box_apply_filter_all (box);
 }
@@ -4772,6 +4932,9 @@ gtk_flow_box_invalidate_filter (GtkFlowBox *box)
  * gtk_flow_box_child_changed()) and when gtk_flow_box_invalidate_sort()
  * is called.
  *
+ * + * Note that using a sort function is incompatible with using a model
+ * + * (see gtk_list_box_bind_model()).
+ *
  * Since: 3.12
  */
 void
@@ -4793,6 +4956,8 @@ gtk_flow_box_set_sort_func (GtkFlowBox         *box,
   priv->sort_data = user_data;
   priv->sort_destroy = destroy;
 
+  gtk_flow_box_check_model_compat (box);
+
   gtk_flow_box_invalidate_sort (box);
 }
 
@@ -4804,6 +4969,27 @@ gtk_flow_box_sort (GtkFlowBoxChild *a,
   GtkFlowBoxPrivate *priv = BOX_PRIV (box);
 
   return priv->sort_func (a, b, priv->sort_data);
+}
+
+static void
+gtk_flow_box_css_node_foreach (gpointer data,
+                               gpointer user_data)
+{
+  GtkWidget **previous = user_data;
+  GtkWidget *row = data;
+  GtkCssNode *row_node;
+  GtkCssNode *prev_node;
+
+  if (*previous)
+    {
+      prev_node = gtk_widget_get_css_node (*previous);
+      row_node = gtk_widget_get_css_node (row);
+      gtk_css_node_insert_after (gtk_css_node_get_parent (row_node),
+                                 row_node,
+                                 prev_node);
+    }
+
+  *previous = row;
 }
 
 /**
@@ -4821,6 +5007,7 @@ void
 gtk_flow_box_invalidate_sort (GtkFlowBox *box)
 {
   GtkFlowBoxPrivate *priv;
+  GtkWidget *previous = NULL;
 
   g_return_if_fail (GTK_IS_FLOW_BOX (box));
 
@@ -4828,8 +5015,8 @@ gtk_flow_box_invalidate_sort (GtkFlowBox *box)
 
   if (priv->sort_func != NULL)
     {
-      g_sequence_sort (priv->children,
-                       (GCompareDataFunc)gtk_flow_box_sort, box);
+      g_sequence_sort (priv->children, (GCompareDataFunc)gtk_flow_box_sort, box);
+      g_sequence_foreach (priv->children, gtk_flow_box_css_node_foreach, &previous);
       gtk_widget_queue_resize (GTK_WIDGET (box));
     }
 }

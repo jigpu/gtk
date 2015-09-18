@@ -126,6 +126,7 @@ append_extension_row (GtkInspectorGeneral *gen,
   GtkWidget *row, *box, *label, *check;
 
   row = gtk_list_box_row_new ();
+  gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), FALSE);
   box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 40);
   g_object_set (box, "margin", 10, NULL);
   gtk_container_add (GTK_CONTAINER (row), box);
@@ -273,10 +274,11 @@ init_env (GtkInspectorGeneral *gen)
 }
 
 static void
-init_x (GtkInspectorGeneral *gen)
+init_display (GtkInspectorGeneral *gen)
 {
   GdkScreen *screen;
   gchar *name;
+  gint i;
 
   screen = gdk_screen_get_default ();
   name = gdk_screen_make_display_name (screen);
@@ -288,6 +290,57 @@ init_x (GtkInspectorGeneral *gen)
 
   if (gdk_screen_is_composited (screen))
     gtk_widget_show (gen->priv->x_composited);
+
+  for (i = 0; i < gdk_screen_get_n_monitors (screen); i++)
+    {
+      GtkWidget *row;
+      GtkWidget *box;
+      GtkWidget *label;
+      gchar *text;
+      gchar *plug_name;
+      GdkRectangle rect;
+      gint w, h, wmm, hmm, scale;
+
+      box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 40);
+      g_object_set (box, "margin", 10, NULL);
+
+      plug_name = gdk_screen_get_monitor_plug_name (screen, i);
+      if (plug_name)
+        text = g_strdup_printf ("Monitor %s", plug_name);
+      else
+        text = g_strdup_printf ("Monitor %d", i);
+      label = gtk_label_new (text);
+      gtk_widget_set_halign (label, GTK_ALIGN_START);
+      gtk_widget_set_valign (label, GTK_ALIGN_BASELINE);
+      gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+      gtk_box_pack_start (GTK_BOX (box), label, FALSE, FALSE, 0);
+      g_free (text);
+      g_free (plug_name);
+
+      gdk_screen_get_monitor_geometry (screen, i, &rect);
+      w = rect.width;
+      h = rect.height;
+      wmm = gdk_screen_get_monitor_width_mm (screen, i);
+      hmm = gdk_screen_get_monitor_height_mm (screen, i);
+      scale = gdk_screen_get_monitor_scale_factor (screen, i);
+      text = g_strdup_printf ("%d × %d%s, %d × %d mm²",
+                              w, h, scale == 2 ? " @ 2" : "",
+                              wmm, hmm);
+      label = gtk_label_new (text);
+      gtk_label_set_selectable (GTK_LABEL (label), TRUE);
+      gtk_widget_set_halign (label, GTK_ALIGN_END);
+      gtk_widget_set_valign (label, GTK_ALIGN_BASELINE);
+      gtk_label_set_xalign (GTK_LABEL (label), 1.0);
+      gtk_box_pack_start (GTK_BOX (box), label, TRUE, TRUE, 0);
+      g_free (text);
+
+      row = gtk_list_box_row_new ();
+      gtk_container_add (GTK_CONTAINER (row), box);
+      gtk_list_box_row_set_activatable (GTK_LIST_BOX_ROW (row), FALSE);
+      gtk_widget_show_all (row);
+
+      gtk_list_box_insert (GTK_LIST_BOX (gen->priv->x_box), row, -1);
+    }
 }
 
 static void
@@ -297,7 +350,7 @@ gtk_inspector_general_init (GtkInspectorGeneral *gen)
   gtk_widget_init_template (GTK_WIDGET (gen));
   init_version (gen);
   init_env (gen);
-  init_x (gen);
+  init_display (gen);
   init_gl (gen);
 }
 

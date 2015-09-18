@@ -138,13 +138,7 @@ gtk_im_context_simple_finalize (GObject *obj)
   GtkIMContextSimple *context_simple = GTK_IM_CONTEXT_SIMPLE (obj);
   GtkIMContextSimplePrivate *priv = context_simple->priv;
 
-  if (priv->tables)
-    {
-      g_slist_foreach (priv->tables, (GFunc)g_free, NULL);
-      g_slist_free (priv->tables);
-
-      priv->tables = NULL;
-    }
+  g_slist_free_full (priv->tables, g_free);
 
   G_OBJECT_CLASS (gtk_im_context_simple_parent_class)->finalize (obj);
 }
@@ -461,6 +455,7 @@ check_compact_table (GtkIMContextSimple           *context_simple,
   GTK_NOTE (MISC, g_print ("compact: %d ", *seq_index));
   seq = NULL;
   match = FALSE;
+  value = 0;
 
   for (i = n_compose - 1; i < table->max_seq_len; i++)
     {
@@ -960,10 +955,7 @@ gtk_im_context_simple_filter_keypress (GtkIMContext *context,
       (priv->in_hex_sequence && !hex_keyval &&
        !is_hex_start && !is_hex_end && !is_escape && !is_backspace))
     {
-      GdkDisplay *display;
       GdkModifierType no_text_input_mask;
-
-      display = gdk_window_get_display (event->window);
 
       no_text_input_mask =
         gdk_keymap_get_modifier_mask (gdk_keymap_get_for_display (display),

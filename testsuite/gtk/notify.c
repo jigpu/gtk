@@ -19,6 +19,12 @@
 #include <string.h>
 #include <gtk/gtk.h>
 #include <gtk/gtkunixprint.h>
+#ifdef GDK_WINDOWING_X11
+#include <gtk/gtkx.h>
+#endif
+#ifdef GDK_WINDOWING_WAYLAND
+#include "gdk/wayland/gdkwayland.h"
+#endif
 
 typedef struct
 {
@@ -403,7 +409,28 @@ test_type (gconstpointer data)
       g_type_is_a (type, GTK_TYPE_FILE_CHOOSER_WIDGET) ||
       g_type_is_a (type, GTK_TYPE_PLACES_SIDEBAR))
     return;
- 
+
+  /* These rely on a d-bus session bus */
+  if (g_type_is_a (type, GTK_TYPE_MOUNT_OPERATION))
+    return;
+
+  /* Backend-specific */
+#ifdef GDK_WINDOWING_X11
+  if (GDK_IS_X11_DISPLAY (gdk_display_get_default ())) ;
+  else
+#endif
+  if (g_type_is_a (type, GTK_TYPE_PLUG) ||
+      g_type_is_a (type, GTK_TYPE_SOCKET))
+    return;
+
+#ifdef GDK_WINDOWING_WAYLAND
+  if (GDK_IS_WAYLAND_DISPLAY (gdk_display_get_default ()))
+    {
+      if (g_type_is_a (type, GTK_TYPE_STATUS_ICON))
+        return;
+    }
+#endif
+
   klass = g_type_class_ref (type);
 
   if (g_type_is_a (type, GTK_TYPE_SETTINGS))
@@ -656,13 +683,7 @@ main (int argc, char **argv)
   const GType *otypes;
   guint i;
   gchar *schema_dir;
-  GTestDBus *bus;
   gint result;
-
-  /* These must be set before before gtk_test_init */
-  g_setenv ("GIO_USE_VFS", "local", TRUE);
-  g_setenv ("GSETTINGS_BACKEND", "memory", TRUE);
-  g_setenv ("G_ENABLE_DIAGNOSTIC", "0", TRUE);
 
   gtk_test_init (&argc, &argv);
   gtk_test_register_all_types();
@@ -670,12 +691,6 @@ main (int argc, char **argv)
   /* g_test_build_filename must be called after gtk_test_init */
   schema_dir = g_test_build_filename (G_TEST_BUILT, "", NULL);
   g_setenv ("GSETTINGS_SCHEMA_DIR", schema_dir, TRUE);
-
-  /* Create one test bus for all tests, as we have a lot of very small
-   * and quick tests.
-   */
-  bus = g_test_dbus_new (G_TEST_DBUS_NONE);
-  g_test_dbus_up (bus);
 
   otypes = gtk_test_list_all_types (NULL);
   for (i = 0; otypes[i]; i++)
@@ -689,8 +704,6 @@ main (int argc, char **argv)
 
   result = g_test_run ();
 
-  g_test_dbus_down (bus);
-  g_object_unref (bus);
   g_free (schema_dir);
 
   return result;

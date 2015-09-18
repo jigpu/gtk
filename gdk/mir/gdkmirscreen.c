@@ -203,7 +203,7 @@ get_output (GdkScreen *screen, gint monitor_num)
 static gint
 gdk_mir_screen_get_width (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_width\n");
+  //g_printerr ("gdk_mir_screen_get_width\n");
   gint width, height;
   get_screen_size (GDK_MIR_SCREEN (screen)->display_config, &width, &height);
   return width;
@@ -212,7 +212,7 @@ gdk_mir_screen_get_width (GdkScreen *screen)
 static gint
 gdk_mir_screen_get_height (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_height\n");
+  //g_printerr ("gdk_mir_screen_get_height\n");
   gint width, height;
   get_screen_size (GDK_MIR_SCREEN (screen)->display_config, &width, &height);
   return height;
@@ -221,7 +221,7 @@ gdk_mir_screen_get_height (GdkScreen *screen)
 static gint
 gdk_mir_screen_get_width_mm (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_width_mm\n");
+  //g_printerr ("gdk_mir_screen_get_width_mm\n");
   gint width, height;
   get_screen_size_mm (GDK_MIR_SCREEN (screen)->display_config, &width, &height);
   return width;
@@ -230,7 +230,7 @@ gdk_mir_screen_get_width_mm (GdkScreen *screen)
 static gint
 gdk_mir_screen_get_height_mm (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_height_mm\n");
+  //g_printerr ("gdk_mir_screen_get_height_mm\n");
   gint width, height;
   get_screen_size_mm (GDK_MIR_SCREEN (screen)->display_config, &width, &height);
   return height;
@@ -293,7 +293,7 @@ gdk_mir_screen_get_n_monitors (GdkScreen *screen)
 static gint
 gdk_mir_screen_get_primary_monitor (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_primary_monitor\n");
+  //g_printerr ("gdk_mir_screen_get_primary_monitor\n");
   return 0; //?
 }
 
@@ -301,7 +301,7 @@ static gint
 gdk_mir_screen_get_monitor_width_mm	(GdkScreen *screen,
                                      gint       monitor_num)
 {
-  g_printerr ("gdk_mir_screen_get_monitor_width_mm (%d)\n", monitor_num);
+  //g_printerr ("gdk_mir_screen_get_monitor_width_mm (%d)\n", monitor_num);
   MirDisplayOutput *output = get_output (screen, monitor_num);
   return output ? output->physical_width_mm : 0;
 }
@@ -310,7 +310,7 @@ static gint
 gdk_mir_screen_get_monitor_height_mm (GdkScreen *screen,
                                       gint       monitor_num)
 {
-  g_printerr ("gdk_mir_screen_get_monitor_height_mm (%d)\n", monitor_num);
+  //g_printerr ("gdk_mir_screen_get_monitor_height_mm (%d)\n", monitor_num);
   MirDisplayOutput *output = get_output (screen, monitor_num);
   return output ? output->physical_height_mm : 0;
 }
@@ -319,7 +319,7 @@ static gchar *
 gdk_mir_screen_get_monitor_plug_name (GdkScreen *screen,
                                       gint       monitor_num)
 {
-  g_printerr ("gdk_mir_screen_get_monitor_plug_name (%d)\n", monitor_num);
+  //g_printerr ("gdk_mir_screen_get_monitor_plug_name (%d)\n", monitor_num);
   MirDisplayOutput *output = get_output (screen, monitor_num);
 
   if (output)
@@ -327,35 +327,31 @@ gdk_mir_screen_get_monitor_plug_name (GdkScreen *screen,
       switch (output->type)
         {
           case mir_display_output_type_unknown:
-            return g_strdup_printf ("UNKNOWN-%u", output->output_id);
+            return g_strdup_printf ("None-%u", output->output_id);
           case mir_display_output_type_vga:
             return g_strdup_printf ("VGA-%u", output->output_id);
           case mir_display_output_type_dvii:
-            return g_strdup_printf ("DVII-%u", output->output_id);
           case mir_display_output_type_dvid:
-            return g_strdup_printf ("DVID-%u", output->output_id);
           case mir_display_output_type_dvia:
-            return g_strdup_printf ("DVIA-%u", output->output_id);
+            return g_strdup_printf ("DVI-%u", output->output_id);
           case mir_display_output_type_composite:
-            return g_strdup_printf ("COMPOSITE-%u", output->output_id);
-          case mir_display_output_type_svideo:
-            return g_strdup_printf ("SVIDEO-%u", output->output_id);
+            return g_strdup_printf ("Composite-%u", output->output_id);
           case mir_display_output_type_lvds:
             return g_strdup_printf ("LVDS-%u", output->output_id);
           case mir_display_output_type_component:
-            return g_strdup_printf ("COMPONENT-%u", output->output_id);
+            return g_strdup_printf ("CTV-%u", output->output_id);
           case mir_display_output_type_ninepindin:
-            return g_strdup_printf ("NINEPINDIN-%u", output->output_id);
+            return g_strdup_printf ("DIN-%u", output->output_id);
           case mir_display_output_type_displayport:
-            return g_strdup_printf ("DISPLAYPORT-%u", output->output_id);
+            return g_strdup_printf ("DP-%u", output->output_id);
           case mir_display_output_type_hdmia:
-            return g_strdup_printf ("HDMIA-%u", output->output_id);
           case mir_display_output_type_hdmib:
-            return g_strdup_printf ("HDMIB-%u", output->output_id);
+            return g_strdup_printf ("HDMI-%u", output->output_id);
+          case mir_display_output_type_svideo:
           case mir_display_output_type_tv:
             return g_strdup_printf ("TV-%u", output->output_id);
           case mir_display_output_type_edp:
-            return g_strdup_printf ("EDP-%u", output->output_id);
+            return g_strdup_printf ("eDP-%u", output->output_id);
         }
     }
 
@@ -403,7 +399,7 @@ gdk_mir_screen_get_monitor_workarea (GdkScreen    *screen,
 static GList *
 gdk_mir_screen_list_visuals (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_list_visuals\n");
+  //g_printerr ("gdk_mir_screen_list_visuals\n");
   return g_list_append (NULL, GDK_MIR_SCREEN (screen)->visual);
 }
 
@@ -432,21 +428,21 @@ gdk_mir_screen_is_composited (GdkScreen *screen)
 static gchar *
 gdk_mir_screen_make_display_name (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_make_display_name\n");
+  //g_printerr ("gdk_mir_screen_make_display_name\n");
   return NULL; // FIXME
 }
 
 static GdkWindow *
 gdk_mir_screen_get_active_window (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_active_window\n");
+  //g_printerr ("gdk_mir_screen_get_active_window\n");
   return NULL; // FIXME
 }
 
 static GList *
 gdk_mir_screen_get_window_stack (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_get_window_stack\n");
+  //g_printerr ("gdk_mir_screen_get_window_stack\n");
   return NULL; // FIXME
 }
 
@@ -454,7 +450,7 @@ static void
 gdk_mir_screen_broadcast_client_message (GdkScreen *screen,
                                          GdkEvent  *event)
 {
-  g_printerr ("gdk_mir_screen_broadcast_client_message\n");
+  //g_printerr ("gdk_mir_screen_broadcast_client_message\n");
   // FIXME
 }
 
@@ -669,6 +665,48 @@ gdk_mir_screen_get_setting (GdkScreen   *screen,
       return TRUE;
     }
 
+  if (g_str_equal (name, "gtk-decoration-layout"))
+    {
+      g_value_set_string (value, "menu:minimize,maximize,close");
+      return TRUE;
+    }
+
+  if (g_str_equal (name, "gtk-dnd-drag-threshold"))
+    {
+      g_value_set_int (value, 8);
+      return TRUE;
+    }
+
+  if (g_str_equal (name, "gtk-dialogs-use-header"))
+    {
+      g_value_set_boolean (value, FALSE);
+      return TRUE;
+    }
+
+  if (g_str_equal (name, "gtk-long-press-time"))
+    {
+      g_value_set_uint (value, 500);
+      return TRUE;
+    }
+
+  if (g_str_equal (name, "gtk-primary-button-warps-slider"))
+    {
+      g_value_set_boolean (value, TRUE);
+      return TRUE;
+    }
+
+  if (g_str_equal (name, "gtk-recent-files-max-age"))
+    {
+      g_value_set_int (value, 30);
+      return TRUE;
+    }
+
+  if (g_str_equal (name, "gtk-titlebar-double-click"))
+    {
+      g_value_set_string (value, "toggle-maximize");
+      return TRUE;
+    }
+
   g_warning ("unknown property %s", name);
 
   return FALSE;
@@ -677,21 +715,21 @@ gdk_mir_screen_get_setting (GdkScreen   *screen,
 static gint
 gdk_mir_screen_visual_get_best_depth (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_visual_get_best_depth\n");
+  //g_printerr ("gdk_mir_screen_visual_get_best_depth\n");
   return VISUAL_DEPTH;
 }
 
 static GdkVisualType
 gdk_mir_screen_visual_get_best_type (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_visual_get_best_type\n");
+  //g_printerr ("gdk_mir_screen_visual_get_best_type\n");
   return VISUAL_TYPE;
 }
 
 static GdkVisual*
 gdk_mir_screen_visual_get_best (GdkScreen *screen)
 {
-  g_printerr ("gdk_mir_screen_visual_get_best\n");
+  //g_printerr ("gdk_mir_screen_visual_get_best\n");
   return GDK_MIR_SCREEN (screen)->visual;
 }
 
@@ -699,7 +737,7 @@ static GdkVisual*
 gdk_mir_screen_visual_get_best_with_depth (GdkScreen *screen,
                                            gint       depth)
 {
-  g_printerr ("gdk_mir_screen_visual_get_best_with_depth (%d)\n", depth);
+  //g_printerr ("gdk_mir_screen_visual_get_best_with_depth (%d)\n", depth);
   return GDK_MIR_SCREEN (screen)->visual;
 }
 
@@ -707,7 +745,7 @@ static GdkVisual*
 gdk_mir_screen_visual_get_best_with_type (GdkScreen     *screen,
                                           GdkVisualType  visual_type)
 {
-  g_printerr ("gdk_mir_screen_visual_get_best_with_type (%d)\n", visual_type);
+  //g_printerr ("gdk_mir_screen_visual_get_best_with_type (%d)\n", visual_type);
   return GDK_MIR_SCREEN (screen)->visual;
 }
 
@@ -716,7 +754,7 @@ gdk_mir_screen_visual_get_best_with_both (GdkScreen     *screen,
                                           gint           depth,
                                           GdkVisualType  visual_type)
 {
-  g_printerr ("gdk_mir_screen_visual_get_best_with_both\n");
+  //g_printerr ("gdk_mir_screen_visual_get_best_with_both\n");
   return GDK_MIR_SCREEN (screen)->visual;
 }
 
@@ -725,7 +763,7 @@ gdk_mir_screen_query_depths (GdkScreen  *screen,
                              gint      **depths,
                              gint       *count)
 {
-  g_printerr ("gdk_mir_screen_query_depths\n");
+  //g_printerr ("gdk_mir_screen_query_depths\n");
   static gint supported_depths[] = { VISUAL_DEPTH };
   *depths = supported_depths;
   *count = 1;
@@ -736,7 +774,7 @@ gdk_mir_screen_query_visual_types (GdkScreen      *screen,
                                    GdkVisualType **visual_types,
                                    gint           *count)
 {
-  g_printerr ("gdk_mir_screen_query_visual_types\n");
+  //g_printerr ("gdk_mir_screen_query_visual_types\n");
   static GdkVisualType supported_visual_types[] = { VISUAL_TYPE };
   *visual_types = supported_visual_types;
   *count = 1;

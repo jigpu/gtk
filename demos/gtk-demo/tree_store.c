@@ -10,8 +10,6 @@
 
 #include <gtk/gtk.h>
 
-static GtkWidget *window = NULL;
-
 /* TreeItem structure */
 typedef struct _TreeItem TreeItem;
 struct _TreeItem
@@ -387,6 +385,8 @@ add_columns (GtkTreeView *treeview)
 GtkWidget *
 do_tree_store (GtkWidget *do_widget)
 {
+  static GtkWidget *window = NULL;
+
   if (!window)
     {
       GtkWidget *vbox;
@@ -398,7 +398,7 @@ do_tree_store (GtkWidget *do_widget)
       window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
       gtk_window_set_screen (GTK_WINDOW (window),
                              gtk_widget_get_screen (do_widget));
-      gtk_window_set_title (GTK_WINDOW (window), "Card planning sheet");
+      gtk_window_set_title (GTK_WINDOW (window), "Tree Store");
       g_signal_connect (window, "destroy",
                         G_CALLBACK (gtk_widget_destroyed), &window);
 
@@ -440,10 +440,7 @@ do_tree_store (GtkWidget *do_widget)
   if (!gtk_widget_get_visible (window))
     gtk_widget_show_all (window);
   else
-    {
-      gtk_widget_destroy (window);
-      window = NULL;
-    }
+    gtk_widget_destroy (window);
 
   return window;
 }

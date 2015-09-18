@@ -40,6 +40,7 @@ struct _GdkWin32GLContext
   /* WGL Context Items */
   HGLRC hglrc;
   HDC gl_hdc;
+  guint need_alpha_bits : 1;
 
   /* other items */
   guint is_attached : 1;
@@ -55,7 +56,6 @@ struct _GdkWin32GLContextClass
 GdkGLContext *
 _gdk_win32_window_create_gl_context (GdkWindow *window,
                                      gboolean attached,
-                                     GdkGLProfile profile,
                                      GdkGLContext *share,
                                      GError **error);
 
@@ -68,16 +68,13 @@ _gdk_win32_gl_context_end_frame (GdkGLContext *context,
                                  cairo_region_t *painted,
                                  cairo_region_t *damage);
 
-void
-_gdk_win32_gl_context_upload_texture (GdkGLContext *context,
-                                      cairo_surface_t *image_surface,
-                                      int width,
-                                      int height,
-                                      guint texture_target);
-
 gboolean
 _gdk_win32_display_make_gl_context_current (GdkDisplay *display,
                                             GdkGLContext *context);
+
+gboolean
+_gdk_win32_gl_context_realize (GdkGLContext *context,
+                               GError **error);
 
 G_END_DECLS
 

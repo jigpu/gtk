@@ -52,7 +52,8 @@ get_vertex_type_name (int type)
 }
 
 static guint
-create_shader (int type, const char const *code)
+create_shader (int         type,
+               const char *code)
 {
   guint shader;
   int status;
@@ -85,8 +86,8 @@ create_shader (int type, const char const *code)
 
 static void
 make_program (GdkGLContextProgram *program,
-              const char const *vertex_shader_code,
-              const char const *fragment_shader_code)
+              const char          *vertex_shader_code,
+              const char          *fragment_shader_code)
 {
   guint vertex_shader, fragment_shader;
   int status;
@@ -146,8 +147,8 @@ bind_vao (GdkGLContextPaintData *paint_data)
 static void
 use_texture_2d_program (GdkGLContextPaintData *paint_data)
 {
-  const char *vertex_shader_code =
-    "#version 120\n"
+  static const char *vertex_shader_code =
+    "#version 150\n"
     "uniform sampler2D map;"
     "attribute vec2 position;\n"
     "attribute vec2 uv;\n"
@@ -156,8 +157,8 @@ use_texture_2d_program (GdkGLContextPaintData *paint_data)
     "  gl_Position = vec4(position, 0, 1);\n"
     "  vUv = uv;\n"
     "}\n";
-  const char *fragment_shader_code =
-    "#version 120\n"
+  static const char *fragment_shader_code =
+    "#version 150\n"
     "varying vec2 vUv;\n"
     "uniform sampler2D map;\n"
     "void main() {\n"
@@ -177,8 +178,8 @@ use_texture_2d_program (GdkGLContextPaintData *paint_data)
 static void
 use_texture_rect_program (GdkGLContextPaintData *paint_data)
 {
-  const char *vertex_shader_code =
-    "#version 120\n"
+  static const char *vertex_shader_code =
+    "#version 150\n"
     "uniform sampler2DRect map;"
     "attribute vec2 position;\n"
     "attribute vec2 uv;\n"
@@ -187,8 +188,8 @@ use_texture_rect_program (GdkGLContextPaintData *paint_data)
     "  gl_Position = vec4(position, 0, 1);\n"
     "  vUv = uv;\n"
     "}\n";
-  const char *fragment_shader_code =
-    "#version 120\n"
+  static const char *fragment_shader_code =
+    "#version 150\n"
     "varying vec2 vUv;\n"
     "uniform sampler2DRect map;\n"
     "void main() {\n"
@@ -235,8 +236,8 @@ gdk_gl_texture_quads (GdkGLContext *paint_context,
   glActiveTexture (GL_TEXTURE0);
   glUniform1i(program->map_location, 0); /* Use texture unit 0 */
 
-  glEnableVertexAttribArray (0);
-  glEnableVertexAttribArray (1);
+  glEnableVertexAttribArray (program->position_location);
+  glEnableVertexAttribArray (program->uv_location);
   glBindBuffer (GL_ARRAY_BUFFER, paint_data->tmp_vertex_buffer);
 
   glVertexAttribPointer (program->position_location, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 4, NULL);
@@ -272,8 +273,8 @@ gdk_gl_texture_quads (GdkGLContext *paint_context,
 
   g_free (vertex_buffer_data);
 
-  glDisableVertexAttribArray (0);
-  glDisableVertexAttribArray (1);
+  glDisableVertexAttribArray (program->position_location);
+  glDisableVertexAttribArray (program->uv_location);
 }
 
 /* x,y,width,height describes a rectangle in the gl render buffer
@@ -355,7 +356,7 @@ gdk_cairo_draw_from_gl (cairo_t              *cr,
 
   if (source_type == GL_RENDERBUFFER)
     {
-      glBindRenderbufferEXT (GL_RENDERBUFFER_EXT, source);
+      glBindRenderbuffer (GL_RENDERBUFFER, source);
       glGetRenderbufferParameteriv (GL_RENDERBUFFER, GL_RENDERBUFFER_ALPHA_SIZE,  &alpha_size);
     }
   else if (source_type == GL_TEXTURE)
@@ -519,7 +520,6 @@ gdk_cairo_draw_from_gl (cairo_t              *cr,
       glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
       glEnable (GL_SCISSOR_TEST);
-      glEnable (GL_TEXTURE_2D);
 
       gdk_window_get_unscaled_size (impl_window, NULL, &unscaled_window_height);
 
@@ -587,8 +587,6 @@ gdk_cairo_draw_from_gl (cairo_t              *cr,
       if (alpha_size != 0)
         glDisable (GL_BLEND);
 
-      glDisable (GL_TEXTURE_2D);
-
 #undef FLIP_Y
 
     }
@@ -644,6 +642,7 @@ gdk_cairo_draw_from_gl (cairo_t              *cr,
 
   if (clip_region)
     cairo_region_destroy (clip_region);
+
 }
 
 /* This is always called with the paint context current */
@@ -664,7 +663,6 @@ gdk_gl_texture_from_surface (cairo_surface_t *surface,
   float umax, vmax;
   gboolean use_texture_rectangle;
   guint target;
-
   paint_context = gdk_gl_context_get_current ();
   if ((_gdk_gl_flags & GDK_GL_SOFTWARE_DRAW_SURFACE) == 0 &&
       paint_context &&
@@ -692,7 +690,6 @@ gdk_gl_texture_from_surface (cairo_surface_t *surface,
     target = GL_TEXTURE_2D;
 
   glBindTexture (target, texture_id);
-  glEnable (target);
   glEnable (GL_SCISSOR_TEST);
 
   glTexParameteri (target, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -720,8 +717,7 @@ gdk_gl_texture_from_surface (cairo_surface_t *surface,
       e.height *= sy;
       image = cairo_surface_map_to_image (surface, &e);
 
-      /* We might have a different alignment, stride or format, so allow overriding here if needed */
-      GDK_GL_CONTEXT_GET_CLASS (paint_context)->upload_texture (paint_context, image, e.width, e.height, target);
+      gdk_gl_context_upload_texture (paint_context, image, e.width, e.height, target);
 
       cairo_surface_unmap_image (surface, image);
 
@@ -750,8 +746,8 @@ gdk_gl_texture_from_surface (cairo_surface_t *surface,
       }
     }
 
+#undef FLIP_Y
 
   glDisable (GL_SCISSOR_TEST);
-  glDisable (target);
   glDeleteTextures (1, &texture_id);
 }

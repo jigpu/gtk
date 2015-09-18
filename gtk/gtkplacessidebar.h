@@ -95,15 +95,21 @@ GDK_AVAILABLE_IN_3_10
 void               gtk_places_sidebar_set_location               (GtkPlacesSidebar   *sidebar,
                                                                   GFile              *location);
 
+GDK_AVAILABLE_IN_3_18
+gboolean           gtk_places_sidebar_get_show_recent            (GtkPlacesSidebar   *sidebar);
+GDK_AVAILABLE_IN_3_18
+void               gtk_places_sidebar_set_show_recent            (GtkPlacesSidebar   *sidebar,
+                                                                  gboolean            show_recent);
+
 GDK_AVAILABLE_IN_3_10
 gboolean           gtk_places_sidebar_get_show_desktop           (GtkPlacesSidebar   *sidebar);
 GDK_AVAILABLE_IN_3_10
 void               gtk_places_sidebar_set_show_desktop           (GtkPlacesSidebar   *sidebar,
                                                                   gboolean            show_desktop);
 
-GDK_AVAILABLE_IN_3_10
+GDK_DEPRECATED_IN_3_18
 gboolean           gtk_places_sidebar_get_show_connect_to_server (GtkPlacesSidebar   *sidebar);
-GDK_AVAILABLE_IN_3_10
+GDK_DEPRECATED_IN_3_18
 void               gtk_places_sidebar_set_show_connect_to_server (GtkPlacesSidebar   *sidebar,
                                                                   gboolean            show_connect_to_server);
 GDK_AVAILABLE_IN_3_14
@@ -131,6 +137,21 @@ GSList *           gtk_places_sidebar_list_shortcuts             (GtkPlacesSideb
 GDK_AVAILABLE_IN_3_10
 GFile *            gtk_places_sidebar_get_nth_bookmark           (GtkPlacesSidebar   *sidebar,
                                                                   gint                n);
+GDK_AVAILABLE_IN_3_18
+void               gtk_places_sidebar_set_drop_targets_visible   (GtkPlacesSidebar   *sidebar,
+                                                                  gboolean            visible,
+                                                                  GdkDragContext     *context);
+GDK_AVAILABLE_IN_3_18
+gboolean           gtk_places_sidebar_get_show_trash             (GtkPlacesSidebar   *sidebar);
+GDK_AVAILABLE_IN_3_18
+void               gtk_places_sidebar_set_show_trash             (GtkPlacesSidebar   *sidebar,
+                                                                  gboolean            show_trash);
+
+GDK_AVAILABLE_IN_3_18
+void                 gtk_places_sidebar_set_show_other_locations (GtkPlacesSidebar   *sidebar,
+                                                                  gboolean            show_other_locations);
+GDK_AVAILABLE_IN_3_18
+gboolean             gtk_places_sidebar_get_show_other_locations (GtkPlacesSidebar   *sidebar);
 
 G_END_DECLS
 

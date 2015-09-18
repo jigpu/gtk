@@ -18,13 +18,11 @@
 #ifndef __GTK_CSS_NODE_DECLARATION_PRIVATE_H__
 #define __GTK_CSS_NODE_DECLARATION_PRIVATE_H__
 
+#include "gtkcsstypesprivate.h"
 #include "gtkenums.h"
 #include "gtkwidgetpath.h"
 
 G_BEGIN_DECLS
-
-typedef struct _GtkCssNodeDeclaration GtkCssNodeDeclaration;
-
 
 GtkCssNodeDeclaration * gtk_css_node_declaration_new                    (void);
 GtkCssNodeDeclaration * gtk_css_node_declaration_ref                    (GtkCssNodeDeclaration         *decl);
@@ -33,6 +31,12 @@ void                    gtk_css_node_declaration_unref                  (GtkCssN
 gboolean                gtk_css_node_declaration_set_junction_sides     (GtkCssNodeDeclaration        **decl,
                                                                          GtkJunctionSides               junction_sides);
 GtkJunctionSides        gtk_css_node_declaration_get_junction_sides     (const GtkCssNodeDeclaration   *decl);
+gboolean                gtk_css_node_declaration_set_type               (GtkCssNodeDeclaration        **decl,
+                                                                         GType                          type);
+GType                   gtk_css_node_declaration_get_type               (const GtkCssNodeDeclaration   *decl);
+gboolean                gtk_css_node_declaration_set_id                 (GtkCssNodeDeclaration        **decl,
+                                                                         const char                    *id);
+const char *            gtk_css_node_declaration_get_id                 (const GtkCssNodeDeclaration   *decl);
 gboolean                gtk_css_node_declaration_set_state              (GtkCssNodeDeclaration        **decl,
                                                                          GtkStateFlags                  flags);
 GtkStateFlags           gtk_css_node_declaration_get_state              (const GtkCssNodeDeclaration   *decl);
@@ -41,15 +45,18 @@ gboolean                gtk_css_node_declaration_add_class              (GtkCssN
                                                                          GQuark                         class_quark);
 gboolean                gtk_css_node_declaration_remove_class           (GtkCssNodeDeclaration        **decl,
                                                                          GQuark                         class_quark);
+gboolean                gtk_css_node_declaration_clear_classes          (GtkCssNodeDeclaration        **decl);
 gboolean                gtk_css_node_declaration_has_class              (const GtkCssNodeDeclaration   *decl,
                                                                          GQuark                         class_quark);
-GList *                 gtk_css_node_declaration_list_classes           (const GtkCssNodeDeclaration   *decl);
+const GQuark *          gtk_css_node_declaration_get_classes            (const GtkCssNodeDeclaration   *decl,
+                                                                         guint                         *n_classes);
 
 gboolean                gtk_css_node_declaration_add_region             (GtkCssNodeDeclaration        **decl,
                                                                          GQuark                         region_quark,
                                                                          GtkRegionFlags                 flags);
 gboolean                gtk_css_node_declaration_remove_region          (GtkCssNodeDeclaration        **decl,
                                                                          GQuark                         region_quark);
+gboolean                gtk_css_node_declaration_clear_regions          (GtkCssNodeDeclaration        **decl);
 gboolean                gtk_css_node_declaration_has_region             (const GtkCssNodeDeclaration   *decl,
                                                                          GQuark                         region_quark,
                                                                          GtkRegionFlags                *flags_return);

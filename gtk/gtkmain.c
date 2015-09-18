@@ -115,7 +115,7 @@
 #include "gtkbox.h"
 #include "gtkclipboard.h"
 #include "gtkdebug.h"
-#include "gtkdnd.h"
+#include "gtkdndprivate.h"
 #include "gtkmain.h"
 #include "gtkmenu.h"
 #include "gtkmodules.h"
@@ -657,9 +657,20 @@ do_pre_parse_initialization (int    *argc,
     }
 #endif  /* G_ENABLE_DEBUG */
 
-  env_string = g_getenv ("GTK_MODULES");
+  env_string = g_getenv ("GTK3_MODULES");
   if (env_string)
     gtk_modules_string = g_string_new (env_string);
+
+  env_string = g_getenv ("GTK_MODULES");
+  if (env_string)
+    {
+      if (gtk_modules_string)
+        g_string_append_c (gtk_modules_string, G_SEARCHPATH_SEPARATOR);
+      else
+        gtk_modules_string = g_string_new (NULL);
+
+      g_string_append (gtk_modules_string, env_string);
+    }
 }
 
 static void
@@ -675,6 +686,12 @@ gettext_initialization (void)
   bind_textdomain_codeset (GETTEXT_PACKAGE "-properties", "UTF-8");
 #    endif
 #endif  
+}
+
+static void
+default_display_notify_cb (GdkDisplayManager *dm)
+{
+  _gtk_accessibility_init ();
 }
 
 static void
@@ -708,11 +725,8 @@ do_post_parse_initialization (int    *argc,
 
   _gtk_accel_map_init ();
 
-  /* Set the 'initialized' flag.
-   */
   gtk_initialized = TRUE;
 
-  /* load gtk modules */
   if (gtk_modules_string)
     {
       _gtk_modules_init (argc, argv, gtk_modules_string->str);
@@ -723,7 +737,9 @@ do_post_parse_initialization (int    *argc,
       _gtk_modules_init (argc, argv, NULL);
     }
 
-  _gtk_accessibility_init ();
+  g_signal_connect (gdk_display_manager_get (), "notify::default-display",
+                    G_CALLBACK (default_display_notify_cb),
+                    NULL);
 }
 
 
@@ -800,8 +816,19 @@ gtk_set_debug_flags (guint flags)
   debug_flags = flags;
 }
 
+gboolean
+gtk_simulate_touchscreen (void)
+{
+  static gint test_touchscreen;
+
+  if (test_touchscreen == 0)
+    test_touchscreen = g_getenv ("GTK_TEST_TOUCHSCREEN") != NULL ? 1 : -1;
+
+  return test_touchscreen > 0 || (debug_flags & GTK_DEBUG_TOUCHSCREEN) != 0;
+ }
+
 /**
- * gtk_get_option_group: (skip)
+ * gtk_get_option_group:
  * @open_default_display: whether to open the default display
  *     when parsing the commandline arguments
  *
@@ -1389,6 +1416,18 @@ rewrite_event_for_window (GdkEvent  *event,
                                 new_window,
                                 &event->touch.x, &event->touch.y);
       break;
+    case GDK_TOUCHPAD_SWIPE:
+      rewrite_events_translate (event->any.window,
+                                new_window,
+                                &event->touchpad_swipe.x,
+                                &event->touchpad_swipe.y);
+      break;
+    case GDK_TOUCHPAD_PINCH:
+      rewrite_events_translate (event->any.window,
+                                new_window,
+                                &event->touchpad_pinch.x,
+                                &event->touchpad_pinch.y);
+      break;
     case GDK_KEY_PRESS:
     case GDK_KEY_RELEASE:
     case GDK_PROXIMITY_IN:
@@ -1438,6 +1477,8 @@ rewrite_event_for_grabs (GdkEvent *event)
     case GDK_TOUCH_UPDATE:
     case GDK_TOUCH_END:
     case GDK_TOUCH_CANCEL:
+    case GDK_TOUCHPAD_SWIPE:
+    case GDK_TOUCHPAD_PINCH:
       display = gdk_window_get_display (event->any.window);
       device = gdk_event_get_device (event);
 
@@ -1458,6 +1499,54 @@ rewrite_event_for_grabs (GdkEvent *event)
     return rewrite_event_for_window (event, grab_window);
   else
     return NULL;
+}
+
+static GtkWidget *
+widget_get_popover_ancestor (GtkWidget *widget,
+                             GtkWindow *window)
+{
+  GtkWidget *parent = gtk_widget_get_parent (widget);
+
+  while (parent && parent != GTK_WIDGET (window))
+    {
+      widget = parent;
+      parent = gtk_widget_get_parent (widget);
+    }
+
+  if (!parent || parent != GTK_WIDGET (window))
+    return NULL;
+
+  if (_gtk_window_is_popover_widget (GTK_WINDOW (window), widget))
+    return widget;
+
+  return NULL;
+}
+
+static gboolean
+check_event_in_child_popover (GtkWidget *event_widget,
+                              GtkWidget *grab_widget)
+{
+  GtkWidget *window, *popover = NULL, *popover_parent = NULL;
+
+  if (grab_widget == event_widget)
+    return FALSE;
+
+  window = gtk_widget_get_ancestor (event_widget, GTK_TYPE_WINDOW);
+
+  if (!window)
+    return FALSE;
+
+  popover = widget_get_popover_ancestor (event_widget, GTK_WINDOW (window));
+
+  if (!popover)
+    return FALSE;
+
+  popover_parent = _gtk_window_get_popover_parent (GTK_WINDOW (window), popover);
+
+  if (!popover_parent)
+    return FALSE;
+
+  return (popover_parent == grab_widget || gtk_widget_is_ancestor (popover_parent, grab_widget));
 }
 
 /**
@@ -1556,11 +1645,10 @@ gtk_main_do_event (GdkEvent *event)
       event_widget = gtk_get_event_widget (event);
     }
 
-  if (GTK_IS_WINDOW (event_widget))
-    {
-      if (_gtk_window_check_handle_wm_event (event))
-        return;
-    }
+  /* Push the event onto a stack of current events for
+   * gtk_current_event_get().
+   */
+  current_events = g_list_prepend (current_events, event);
 
   window_group = gtk_main_get_window_group (event_widget);
   device = gdk_event_get_device (event);
@@ -1571,6 +1659,19 @@ gtk_main_do_event (GdkEvent *event)
 
   if (!grab_widget)
     grab_widget = gtk_window_group_get_current_grab (window_group);
+
+  if (GTK_IS_WINDOW (event_widget) ||
+      (grab_widget && grab_widget != event_widget &&
+       !gtk_widget_is_ancestor (event_widget, grab_widget)))
+    {
+      /* Ignore event if we got a grab on another toplevel */
+      if (!grab_widget ||
+          gtk_widget_get_toplevel (event_widget) == gtk_widget_get_toplevel (grab_widget))
+        {
+          if (_gtk_window_check_handle_wm_event (event))
+            goto cleanup;
+        }
+    }
 
   /* Find out the topmost widget where captured event propagation
    * should start, which is the widget holding the GTK+ grab
@@ -1589,22 +1690,20 @@ gtk_main_do_event (GdkEvent *event)
        gtk_widget_is_ancestor (event_widget, grab_widget)))
     grab_widget = event_widget;
 
+  /* popovers are not really a "child" of their "parent" in the widget/window
+   * hierarchy sense, we however want to interact with popovers spawn by widgets
+   * within grab_widget. If this is the case, we let the event go through
+   * unaffected by the grab.
+   */
+  if (check_event_in_child_popover (event_widget, grab_widget))
+    grab_widget = event_widget;
+
   /* If the widget receiving events is actually blocked by another
    * device GTK+ grab
    */
   if (device &&
       _gtk_window_group_widget_is_blocked_for_device (window_group, grab_widget, device))
-    {
-      if (rewritten_event)
-        gdk_event_free (rewritten_event);
-
-      return;
-    }
-
-  /* Push the event onto a stack of current events for
-   * gtk_current_event_get().
-   */
-  current_events = g_list_prepend (current_events, event);
+    goto cleanup;
 
   /* Not all events get sent to the grabbing widget.
    * The delete, destroy, expose, focus change and resize
@@ -1739,6 +1838,8 @@ gtk_main_do_event (GdkEvent *event)
     case GDK_TOUCH_UPDATE:
     case GDK_TOUCH_END:
     case GDK_TOUCH_CANCEL:
+    case GDK_TOUCHPAD_SWIPE:
+    case GDK_TOUCHPAD_PINCH:
       if (!_gtk_propagate_captured_event (grab_widget, event, topmost_widget))
         gtk_propagate_event (grab_widget, event);
       break;
@@ -1780,6 +1881,7 @@ gtk_main_do_event (GdkEvent *event)
       _gtk_tooltip_handle_event (event);
     }
 
+ cleanup:
   tmp_list = current_events;
   current_events = g_list_remove_link (current_events, tmp_list);
   g_list_free_1 (tmp_list);

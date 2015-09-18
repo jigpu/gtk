@@ -152,7 +152,8 @@ enum {
 
 enum {
   PROP_0,
-  PROP_CURSOR
+  PROP_CURSOR,
+  LAST_PROP
 };
 
 /* Global info */
@@ -195,10 +196,7 @@ static void draw_ugly_color (GdkWindow       *window,
 
 
 static guint signals[LAST_SIGNAL] = { 0 };
-
-static gpointer parent_class = NULL;
-
-static const cairo_user_data_key_t gdk_window_cairo_key;
+static GParamSpec *properties[LAST_PROP] = { NULL, };
 
 G_DEFINE_ABSTRACT_TYPE (GdkWindow, gdk_window, G_TYPE_OBJECT)
 
@@ -240,6 +238,39 @@ print_region (cairo_region_t *region)
 }
 #endif
 
+static GList *
+list_insert_link_before (GList *list,
+                         GList *sibling,
+                         GList *link)
+{
+  if (list == NULL || sibling == list)
+    {
+      link->prev = NULL;
+      link->next = list;
+      if (list)
+        list->prev = link;
+      return link;
+    }
+  else if (sibling == NULL)
+    {
+      GList *last = g_list_last (list);
+
+      last->next = link;
+      link->prev = last;
+      link->next = NULL;
+
+      return list;
+    }
+  else
+    {
+      link->next = sibling;
+      link->prev = sibling->prev;
+      sibling->prev = link;
+
+      return list;
+    }
+}
+
 static void
 gdk_window_init (GdkWindow *window)
 {
@@ -257,6 +288,7 @@ gdk_window_init (GdkWindow *window)
   window->visibility = GDK_VISIBILITY_FULLY_OBSCURED;
   /* Default to unobscured since some backends don't send visibility events */
   window->native_visibility = GDK_VISIBILITY_UNOBSCURED;
+  window->children_list_node.data = window;
 
   window->device_cursor = g_hash_table_new_full (NULL, NULL,
                                                  NULL, g_object_unref);
@@ -293,8 +325,6 @@ gdk_window_class_init (GdkWindowClass *klass)
 {
   GObjectClass *object_class = G_OBJECT_CLASS (klass);
 
-  parent_class = g_type_class_peek_parent (klass);
-
   object_class->finalize = gdk_window_finalize;
   object_class->set_property = gdk_window_set_property;
   object_class->get_property = gdk_window_get_property;
@@ -314,13 +344,13 @@ gdk_window_class_init (GdkWindowClass *klass)
    *
    * Since: 2.18
    */
-  g_object_class_install_property (object_class,
-                                   PROP_CURSOR,
-                                   g_param_spec_object ("cursor",
-                                                        P_("Cursor"),
-                                                        P_("Cursor"),
-                                                        GDK_TYPE_CURSOR,
-                                                        G_PARAM_READWRITE));
+  properties[PROP_CURSOR] =
+      g_param_spec_object ("cursor",
+                           P_("Cursor"),
+                           P_("Cursor"),
+                           GDK_TYPE_CURSOR,
+                           G_PARAM_READWRITE);
+  g_object_class_install_properties (object_class, LAST_PROP, properties);
 
   /**
    * GdkWindow::pick-embedded-child:
@@ -512,7 +542,7 @@ gdk_window_finalize (GObject *object)
   if (window->devices_inside)
     g_list_free (window->devices_inside);
 
-  G_OBJECT_CLASS (parent_class)->finalize (object);
+  G_OBJECT_CLASS (gdk_window_parent_class)->finalize (object);
 }
 
 static void
@@ -1110,6 +1140,9 @@ find_native_sibling_above (GdkWindow *parent,
 {
   GdkWindow *w;
 
+  if (!parent)
+    return NULL;
+
   w = find_native_sibling_above_helper (parent, child);
   if (w)
     return w;
@@ -1370,7 +1403,7 @@ gdk_window_new (GdkWindow     *parent,
       window->input_only = TRUE;
     }
 
-  window->parent->children = g_list_prepend (window->parent->children, window);
+  window->parent->children = g_list_concat (&window->children_list_node, window->parent->children);
 
   if (window->parent->window_type == GDK_WINDOW_ROOT)
     {
@@ -1607,7 +1640,7 @@ gdk_window_reparent (GdkWindow *window,
 
   if (old_parent)
     {
-      old_parent->children = g_list_remove (old_parent->children, window);
+      old_parent->children = g_list_remove_link (old_parent->children, &window->children_list_node);
 
       if (gdk_window_has_impl (window))
         old_parent->impl_window->native_children =
@@ -1618,7 +1651,7 @@ gdk_window_reparent (GdkWindow *window,
   window->x = x;
   window->y = y;
 
-  new_parent->children = g_list_prepend (new_parent->children, window);
+  new_parent->children = g_list_concat (&window->children_list_node, new_parent->children);
 
   if (gdk_window_has_impl (window))
     new_parent->impl_window->native_children = g_list_prepend (new_parent->impl_window->native_children, window);
@@ -1919,7 +1952,6 @@ _gdk_window_destroy_hierarchy (GdkWindow *window,
   GdkWindow *temp_window;
   GdkScreen *screen;
   GdkDisplay *display;
-  GList *children;
   GList *tmp;
 
   g_return_if_fail (GDK_IS_WINDOW (window));
@@ -1975,7 +2007,7 @@ _gdk_window_destroy_hierarchy (GdkWindow *window,
 	  if (window->parent)
 	    {
 	      if (window->parent->children)
-		window->parent->children = g_list_remove (window->parent->children, window);
+                window->parent->children = g_list_remove_link (window->parent->children, &window->children_list_node);
 
               if (gdk_window_has_impl (window))
                 window->parent->impl_window->native_children =
@@ -2015,8 +2047,9 @@ _gdk_window_destroy_hierarchy (GdkWindow *window,
 	    g_assert (window->children == NULL);
 	  else
 	    {
-	      children = tmp = window->children;
+	      tmp = window->children;
 	      window->children = NULL;
+	      /* No need to free children list, its all made up of in-struct nodes */
 
 	      while (tmp)
 		{
@@ -2030,7 +2063,6 @@ _gdk_window_destroy_hierarchy (GdkWindow *window,
 						   foreign_destroy);
 		}
 
-	      g_list_free (children);
 
               if (gdk_window_has_impl (window))
                 g_assert (window->native_children == NULL);
@@ -2041,8 +2073,7 @@ _gdk_window_destroy_hierarchy (GdkWindow *window,
 	  impl_class = GDK_WINDOW_IMPL_GET_CLASS (window->impl);
 
 	  if (gdk_window_has_impl (window))
-	    impl_class->destroy (window, recursing_native,
-				 foreign_destroy);
+	    impl_class->destroy (window, recursing_native, foreign_destroy);
 	  else
 	    {
 	      /* hide to make sure we repaint and break grabs */
@@ -2724,8 +2755,11 @@ gdk_window_ref_impl_surface (GdkWindow *window)
 }
 
 GdkGLContext *
-gdk_window_get_paint_gl_context (GdkWindow *window, GError **error)
+gdk_window_get_paint_gl_context (GdkWindow  *window,
+                                 GError    **error)
 {
+  GError *internal_error = NULL;
+
   if (_gdk_gl_flags & GDK_GL_DISABLE)
     {
       g_set_error_literal (error, GDK_GL_ERROR,
@@ -2737,23 +2771,25 @@ gdk_window_get_paint_gl_context (GdkWindow *window, GError **error)
   if (window->impl_window->gl_paint_context == NULL)
     {
       window->impl_window->gl_paint_context =
-        GDK_WINDOW_IMPL_GET_CLASS (window->impl)->create_gl_context (window,
+        GDK_WINDOW_IMPL_GET_CLASS (window->impl)->create_gl_context (window->impl_window,
                                                                      TRUE,
-                                                                     GDK_GL_PROFILE_3_2_CORE,
                                                                      NULL,
-                                                                     error);
-      if (window->impl_window->gl_paint_context == NULL &&
-          g_error_matches (*error, GDK_GL_ERROR,
-                           GDK_GL_ERROR_UNSUPPORTED_PROFILE))
-        {
-          g_clear_error (error);
-          window->impl_window->gl_paint_context =
-            GDK_WINDOW_IMPL_GET_CLASS (window->impl)->create_gl_context (window,
-                                                                         TRUE,
-                                                                         GDK_GL_PROFILE_DEFAULT,
-                                                                         NULL,
-                                                                         error);
-        }
+                                                                     &internal_error);
+    }
+
+  if (internal_error != NULL)
+    {
+      g_propagate_error (error, internal_error);
+      g_clear_object (&(window->impl_window->gl_paint_context));
+      return NULL;
+    }
+
+  gdk_gl_context_realize (window->impl_window->gl_paint_context, &internal_error);
+  if (internal_error != NULL)
+    {
+      g_propagate_error (error, internal_error);
+      g_clear_object (&(window->impl_window->gl_paint_context));
+      return NULL;
     }
 
   return window->impl_window->gl_paint_context;
@@ -2762,7 +2798,6 @@ gdk_window_get_paint_gl_context (GdkWindow *window, GError **error)
 /**
  * gdk_window_create_gl_context:
  * @window: a #GdkWindow
- * @profile: the GL profile the context should target
  * @error: return location for an error
  *
  * Creates a new #GdkGLContext matching the
@@ -2771,6 +2806,9 @@ gdk_window_get_paint_gl_context (GdkWindow *window, GError **error)
  *
  * If the creation of the #GdkGLContext failed, @error will be set.
  *
+ * Before using the returned #GdkGLContext, you will need to
+ * call gdk_gl_context_make_current() or gdk_gl_context_realize().
+ *
  * Returns: (transfer full): the newly created #GdkGLContext, or
  * %NULL on error
  *
@@ -2778,7 +2816,6 @@ gdk_window_get_paint_gl_context (GdkWindow *window, GError **error)
  **/
 GdkGLContext *
 gdk_window_create_gl_context (GdkWindow    *window,
-                              GdkGLProfile  profile,
                               GError      **error)
 {
   GdkGLContext *paint_context;
@@ -2790,9 +2827,8 @@ gdk_window_create_gl_context (GdkWindow    *window,
   if (paint_context == NULL)
     return NULL;
 
-  return GDK_WINDOW_IMPL_GET_CLASS (window->impl)->create_gl_context (window,
+  return GDK_WINDOW_IMPL_GET_CLASS (window->impl)->create_gl_context (window->impl_window,
 								      FALSE,
-                                                                      profile,
                                                                       paint_context,
                                                                       error);
 }
@@ -2932,7 +2968,6 @@ gdk_window_begin_paint_region (GdkWindow       *window,
           glDisable (GL_DEPTH_TEST);
           glDisable(GL_BLEND);
           glBlendFunc (GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-          glTexEnvi (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
           glViewport (0, 0, ww, wh);
         }
@@ -3104,7 +3139,6 @@ gdk_window_end_paint (GdkWindow *window)
         {
           surface = gdk_window_ref_impl_surface (window);
           cr = cairo_create (surface);
-          cairo_surface_destroy (surface);
 
           cairo_set_source_surface (cr, window->current_paint.surface, 0, 0);
           gdk_cairo_region (cr, window->current_paint.region);
@@ -3116,6 +3150,7 @@ gdk_window_end_paint (GdkWindow *window)
           cairo_destroy (cr);
 
           cairo_surface_flush (surface);
+          cairo_surface_destroy (surface);
         }
     }
 
@@ -3506,7 +3541,11 @@ _gdk_window_process_updates_recurse_helper (GdkWindow *window,
 {
   GdkWindow *child;
   cairo_region_t *clipped_expose_region;
-  GList *l, *children;
+  GdkWindow **children;
+  GdkWindow **free_children = NULL;
+  int i, n_children;
+  GList *l;
+  GList *last_link;
 
   if (window->destroyed)
     return;
@@ -3540,23 +3579,31 @@ _gdk_window_process_updates_recurse_helper (GdkWindow *window,
       GdkEvent event;
 
       event.expose.type = GDK_EXPOSE;
-      event.expose.window = g_object_ref (window);
+      event.expose.window = window; /* we already hold a ref */
       event.expose.send_event = FALSE;
       event.expose.count = 0;
       event.expose.region = clipped_expose_region;
       cairo_region_get_extents (clipped_expose_region, &event.expose.area);
 
       _gdk_event_emit (&event);
-
-      g_object_unref (window);
     }
 
-  /* Make this reentrancy safe for expose handlers freeing windows */
-  children = g_list_copy (window->children);
-  g_list_foreach (children, (GFunc)g_object_ref, NULL);
+  n_children = 0;
+  last_link = NULL;
+  /* Count n_children and fetch bottommost at same time */
+  for (l = window->children; l != NULL; l = l->next)
+    {
+      last_link = l;
+      n_children++;
+    }
 
+  children = g_newa (GdkWindow *, n_children);
+  if (children == NULL)
+    children = free_children = g_new (GdkWindow *, n_children);
+
+  n_children = 0;
   /* Iterate over children, starting at bottommost */
-  for (l = g_list_last (children); l != NULL; l = l->prev)
+  for (l = last_link; l != NULL; l = l->prev)
     {
       child = l->data;
 
@@ -3570,10 +3617,22 @@ _gdk_window_process_updates_recurse_helper (GdkWindow *window,
 
       /* Client side child, expose */
       if (child->impl == window->impl)
-        _gdk_window_process_updates_recurse_helper ((GdkWindow *)child, clipped_expose_region);
+        {
+          /* ref the child to make this reentrancy safe for expose
+             handlers freeing other windows */
+          children[n_children++] = g_object_ref (child);
+        }
     }
 
-  g_list_free_full (children, g_object_unref);
+  for (i = 0; i < n_children; i++)
+    {
+      _gdk_window_process_updates_recurse_helper ((GdkWindow *)children[i],
+                                                  clipped_expose_region);
+      g_object_unref (children[i]);
+    }
+
+
+  g_free (free_children);
 
  out:
   cairo_region_destroy (clipped_expose_region);
@@ -3901,10 +3960,10 @@ gdk_window_process_updates (GdkWindow *window,
 {
   g_return_if_fail (GDK_IS_WINDOW (window));
 
-  return gdk_window_process_updates_with_mode (window,
-                                               update_children ?
-                                               PROCESS_UPDATES_WITH_ALL_CHILDREN :
-                                               PROCESS_UPDATES_NO_RECURSE);
+  gdk_window_process_updates_with_mode (window,
+                                        update_children ?
+                                        PROCESS_UPDATES_WITH_ALL_CHILDREN :
+                                        PROCESS_UPDATES_NO_RECURSE);
 }
 
 static void
@@ -4661,6 +4720,8 @@ gdk_window_get_device_position_double (GdkWindow       *window,
   g_return_val_if_fail (GDK_IS_DEVICE (device), NULL);
   g_return_val_if_fail (gdk_device_get_source (device) != GDK_SOURCE_KEYBOARD, NULL);
 
+  tmp_x = tmp_y = 0;
+  tmp_mask = 0;
   normal_child = GDK_WINDOW_IMPL_GET_CLASS (window->impl)->get_device_state (window,
                                                                              device,
                                                                              &tmp_x, &tmp_y,
@@ -4767,8 +4828,8 @@ gdk_window_raise_internal (GdkWindow *window)
 
   if (parent && parent->children->data != window)
     {
-      parent->children = g_list_remove (parent->children, window);
-      parent->children = g_list_prepend (parent->children, window);
+      parent->children = g_list_remove_link (parent->children, &window->children_list_node);
+      parent->children = g_list_concat (&window->children_list_node, parent->children);
       did_raise = TRUE;
     }
 
@@ -5036,8 +5097,8 @@ gdk_window_lower_internal (GdkWindow *window)
 
   if (parent)
     {
-      parent->children = g_list_remove (parent->children, window);
-      parent->children = g_list_append (parent->children, window);
+      parent->children = g_list_remove_link (parent->children, &window->children_list_node);
+      parent->children = g_list_concat (parent->children, &window->children_list_node);
     }
 
   impl_class = GDK_WINDOW_IMPL_GET_CLASS (window->impl);
@@ -5204,15 +5265,15 @@ gdk_window_restack (GdkWindow     *window,
       if (sibling_link == NULL)
 	return;
 
-      parent->children = g_list_remove (parent->children, window);
+      parent->children = g_list_remove_link (parent->children, &window->children_list_node);
       if (above)
-	parent->children = g_list_insert_before (parent->children,
-						 sibling_link,
-						 window);
+	parent->children = list_insert_link_before (parent->children,
+                                                    sibling_link,
+                                                    &window->children_list_node);
       else
-	parent->children = g_list_insert_before (parent->children,
-						 sibling_link->next,
-						 window);
+	parent->children = list_insert_link_before (parent->children,
+                                                    sibling_link->next,
+                                                    &window->children_list_node);
 
       impl_class = GDK_WINDOW_IMPL_GET_CLASS (window->impl);
       if (gdk_window_has_impl (window))
@@ -5419,6 +5480,8 @@ gdk_window_withdraw (GdkWindow *window)
  * including #GDK_BUTTON_PRESS_MASK means the window should report button
  * press events. The event mask is the bitwise OR of values from the
  * #GdkEventMask enumeration.
+ *
+ * See the [input handling overview][event-masks] for details.
  **/
 void
 gdk_window_set_events (GdkWindow       *window,
@@ -5488,6 +5551,8 @@ gdk_window_get_events (GdkWindow *window)
  * including #GDK_BUTTON_PRESS_MASK means the window should report button
  * press events. The event mask is the bitwise OR of values from the
  * #GdkEventMask enumeration.
+ *
+ * See the [input handling overview][event-masks] for details.
  *
  * Since: 3.0
  **/
@@ -5895,10 +5960,10 @@ gdk_window_scroll (GdkWindow *window,
  * Since: 2.8
  */
 void
-gdk_window_move_region (GdkWindow       *window,
-			const cairo_region_t *region,
-			gint             dx,
-			gint             dy)
+gdk_window_move_region (GdkWindow            *window,
+                        const cairo_region_t *region,
+                        gint                  dx,
+                        gint                  dy)
 {
   cairo_region_t *expose_area;
 
@@ -5924,10 +5989,12 @@ gdk_window_move_region (GdkWindow       *window,
  * @window: a #GdkWindow
  * @color: a #GdkColor
  *
- * Sets the background color of @window. (However, when using GTK+,
- * set the background of a widget with gtk_widget_modify_bg() - if
- * you’re an application - or gtk_style_set_background() - if you're
- * implementing a custom widget.)
+ * Sets the background color of @window.
+ *
+ * However, when using GTK+, influence the background of a widget
+ * using a style class or CSS — if you’re an application — or with
+ * gtk_style_context_set_background() — if you're implementing a
+ * custom widget.
  *
  * See also gdk_window_set_background_pattern().
  *
@@ -5964,9 +6031,24 @@ gdk_window_set_background_rgba (GdkWindow     *window,
                                 const GdkRGBA *rgba)
 {
   cairo_pattern_t *pattern;
+  GdkRGBA prev_rgba;
 
   g_return_if_fail (GDK_IS_WINDOW (window));
   g_return_if_fail (rgba != NULL);
+
+  /*
+   * If the new RGBA matches the previous pattern, ignore the change so that
+   * we do not invalidate the window contents.
+   */
+  if ((window->background != NULL) &&
+      (cairo_pattern_get_type (window->background) == CAIRO_PATTERN_TYPE_SOLID) &&
+      (cairo_pattern_get_rgba (window->background,
+                               &prev_rgba.red,
+                               &prev_rgba.green,
+                               &prev_rgba.blue,
+                               &prev_rgba.alpha) == CAIRO_STATUS_SUCCESS) &&
+      gdk_rgba_equal (&prev_rgba, rgba))
+    return;
 
   pattern = cairo_pattern_create_rgba (rgba->red, rgba->green,
                                        rgba->blue, rgba->alpha);
@@ -5991,7 +6073,7 @@ gdk_window_set_background_rgba (GdkWindow     *window,
  * when the window is obscured then exposed.
  */
 void
-gdk_window_set_background_pattern (GdkWindow *window,
+gdk_window_set_background_pattern (GdkWindow       *window,
                                    cairo_pattern_t *pattern)
 {
   g_return_if_fail (GDK_IS_WINDOW (window));
@@ -6141,7 +6223,7 @@ gdk_window_set_cursor (GdkWindow *window,
         }
 
       g_list_free (devices);
-      g_object_notify (G_OBJECT (window), "cursor");
+      g_object_notify_by_pspec (G_OBJECT (window), properties[PROP_CURSOR]);
     }
 }
 
@@ -6367,7 +6449,7 @@ gdk_window_get_origin (GdkWindow *window,
  *
  * Obtains the position of a window position in root
  * window coordinates. This is similar to
- * gdk_window_get_origin() but allows you go pass
+ * gdk_window_get_origin() but allows you to pass
  * in any position in the window, not just the origin.
  *
  * Since: 2.18
@@ -6772,6 +6854,63 @@ gdk_window_set_child_input_shapes (GdkWindow *window)
 }
 
 /**
+ * gdk_window_set_pass_through:
+ * @window: a #GdkWindow
+ * @pass_through: a boolean
+ *
+ * Sets whether input to the window is passed through to the window
+ * below.
+ *
+ * The default value of this is %FALSE, which means that pointer
+ * events that happen inside the window are send first to the window,
+ * but if the event is not selected by the event mask then the event
+ * is sent to the parent window, and so on up the hierarchy.
+ *
+ * If @pass_through is %TRUE then such pointer events happen as if the
+ * window wasn't there at all, and thus will be sent first to any
+ * windows below @window. This is useful if the window is used in a
+ * transparent fashion. In the terminology of the web this would be called
+ * "pointer-events: none".
+ *
+ * Note that a window with @pass_through %TRUE can still have a subwindow
+ * without pass through, so you can get events on a subset of a window. And in
+ * that cases you would get the in-between related events such as the pointer
+ * enter/leave events on its way to the destination window.
+ *
+ * Since: 3.18
+ **/
+void
+gdk_window_set_pass_through (GdkWindow *window,
+                             gboolean   pass_through)
+{
+  g_return_if_fail (GDK_IS_WINDOW (window));
+
+  window->pass_through = !!pass_through;
+
+  /* Pointer may have e.g. moved outside window due to the input region change */
+  _gdk_synthesize_crossing_events_for_geometry_change (window);
+}
+
+/**
+ * gdk_window_get_pass_through:
+ * @window: a #GdkWindow
+ *
+ * Returns whether input to the window is passed through to the window
+ * below.
+ *
+ * See gdk_window_set_pass_through() for details
+ *
+ * Since: 3.18
+ **/
+gboolean
+gdk_window_get_pass_through (GdkWindow *window)
+{
+  g_return_val_if_fail (GDK_IS_WINDOW (window), FALSE);
+
+  return window->pass_through;
+}
+
+/**
  * gdk_window_merge_child_input_shapes:
  * @window: a #GdkWindow
  *
@@ -7120,6 +7259,63 @@ point_in_window (GdkWindow *window,
 			  x, y));
 }
 
+/* Same as point_in_window, except it also takes pass_through and its
+   interaction with child windows into account */
+static gboolean
+point_in_input_window (GdkWindow *window,
+		       gdouble    x,
+		       gdouble    y,
+		       GdkWindow **input_window,
+		       gdouble   *input_window_x,
+		       gdouble   *input_window_y)
+{
+  GdkWindow *sub;
+  double child_x, child_y;
+  GList *l;
+
+  if (!point_in_window (window, x, y))
+    return FALSE;
+
+  if (!window->pass_through)
+    {
+      if (input_window)
+	{
+	  *input_window = window;
+	  *input_window_x = x;
+	  *input_window_y = y;
+	}
+      return TRUE;
+    }
+
+  /* For pass-through, must be over a child input window */
+
+  /* Children is ordered in reverse stack order, i.e. first is topmost */
+  for (l = window->children; l != NULL; l = l->next)
+    {
+      sub = l->data;
+
+      if (!GDK_WINDOW_IS_MAPPED (sub))
+	continue;
+
+      gdk_window_coords_from_parent ((GdkWindow *)sub,
+				     x, y,
+				     &child_x, &child_y);
+      if (point_in_input_window (sub, child_x, child_y,
+				 input_window, input_window_x, input_window_y))
+	{
+	  if (input_window)
+	    gdk_window_coords_to_parent (sub,
+					 *input_window_x,
+					 *input_window_y,
+					 input_window_x,
+					 input_window_y);
+	  return TRUE;
+	}
+    }
+
+  return FALSE;
+}
+
 static GdkWindow *
 convert_native_coords_to_toplevel (GdkWindow *window,
 				   gdouble    child_x,
@@ -7213,7 +7409,8 @@ _gdk_window_find_child_at (GdkWindow *window,
 	  gdk_window_coords_from_parent ((GdkWindow *)sub,
                                          x, y,
                                          &child_x, &child_y);
-	  if (point_in_window (sub, child_x, child_y))
+	  if (point_in_input_window (sub, child_x, child_y,
+				     NULL, NULL, NULL))
 	    return (GdkWindow *)sub;
 	}
 
@@ -7236,7 +7433,7 @@ _gdk_window_find_descendant_at (GdkWindow *window,
 				gdouble   *found_x,
 				gdouble   *found_y)
 {
-  GdkWindow *sub;
+  GdkWindow *sub, *input_window;
   gdouble child_x, child_y;
   GList *l;
   gboolean found;
@@ -7257,11 +7454,12 @@ _gdk_window_find_descendant_at (GdkWindow *window,
 	      gdk_window_coords_from_parent ((GdkWindow *)sub,
                                              x, y,
                                              &child_x, &child_y);
-	      if (point_in_window (sub, child_x, child_y))
+	      if (point_in_input_window (sub, child_x, child_y,
+					 &input_window, &child_x, &child_y))
 		{
 		  x = child_x;
 		  y = child_y;
-		  window = sub;
+		  window = input_window;
 		  found = TRUE;
 		  break;
 		}
@@ -7421,7 +7619,9 @@ static const guint type_masks[] = {
   GDK_TOUCH_MASK, /* GDK_TOUCH_BEGIN = 37 */
   GDK_TOUCH_MASK, /* GDK_TOUCH_UPDATE = 38 */
   GDK_TOUCH_MASK, /* GDK_TOUCH_END = 39 */
-  GDK_TOUCH_MASK /* GDK_TOUCH_CANCEL = 40 */
+  GDK_TOUCH_MASK, /* GDK_TOUCH_CANCEL = 40 */
+  GDK_TOUCHPAD_GESTURE_MASK, /* GDK_TOUCHPAD_SWIPE = 41 */
+  GDK_TOUCHPAD_GESTURE_MASK, /* GDK_TOUCHPAD_PINCH = 42 */
 };
 G_STATIC_ASSERT (G_N_ELEMENTS (type_masks) == GDK_EVENT_LAST);
 
@@ -7456,6 +7656,13 @@ is_button_type (GdkEventType type)
          type == GDK_TOUCH_BEGIN ||
          type == GDK_TOUCH_END ||
 	 type == GDK_SCROLL;
+}
+
+static gboolean
+is_gesture_type (GdkEventType type)
+{
+  return (type == GDK_TOUCHPAD_SWIPE ||
+          type == GDK_TOUCHPAD_PINCH);
 }
 
 static gboolean
@@ -7597,6 +7804,16 @@ _gdk_make_event (GdkWindow    *window,
     case GDK_DROP_START:
     case GDK_DROP_FINISHED:
       event->dnd.time = the_time;
+      break;
+
+    case GDK_TOUCHPAD_SWIPE:
+      event->touchpad_swipe.time = the_time;
+      event->touchpad_swipe.state = the_state;
+      break;
+
+    case GDK_TOUCHPAD_PINCH:
+      event->touchpad_pinch.time = the_time;
+      event->touchpad_pinch.state = the_state;
       break;
 
     case GDK_FOCUS_CHANGE:
@@ -9125,6 +9342,85 @@ proxy_button_event (GdkEvent *source_event,
   return TRUE; /* Always unlink original, we want to obey the emulated event mask */
 }
 
+static gboolean
+proxy_gesture_event (GdkEvent *source_event,
+                     gulong    serial)
+{
+  GdkWindow *toplevel_window, *pointer_window, *event_win;
+  GdkDevice *device, *source_device;
+  gdouble toplevel_x, toplevel_y;
+  GdkDisplay *display;
+  GdkEventMask evmask;
+  GdkEventType evtype;
+  GdkEvent *event;
+  guint state;
+
+  evtype = source_event->any.type;
+  gdk_event_get_coords (source_event, &toplevel_x, &toplevel_y);
+  gdk_event_get_state (source_event, &state);
+  device = gdk_event_get_device (source_event);
+  source_device = gdk_event_get_source_device (source_event);
+  display = gdk_window_get_display (source_event->any.window);
+  toplevel_window = convert_native_coords_to_toplevel (source_event->any.window,
+						       toplevel_x, toplevel_y,
+						       &toplevel_x, &toplevel_y);
+
+  pointer_window = get_pointer_window (display, toplevel_window, device,
+				       toplevel_x, toplevel_y,
+				       serial);
+
+  event_win = get_event_window (display, device, NULL,
+                                pointer_window, evtype, state,
+                                &evmask, FALSE, serial);
+  if (!event_win)
+    return TRUE;
+
+  if ((evmask & GDK_TOUCHPAD_GESTURE_MASK) == 0)
+    return TRUE;
+
+  event = _gdk_make_event (event_win, evtype, source_event, FALSE);
+  gdk_event_set_device (event, device);
+  gdk_event_set_source_device (event, source_device);
+
+  switch (evtype)
+    {
+    case GDK_TOUCHPAD_SWIPE:
+      convert_toplevel_coords_to_window (event_win,
+                                         toplevel_x, toplevel_y,
+                                         &event->touchpad_swipe.x,
+                                         &event->touchpad_swipe.y);
+      gdk_event_get_root_coords (source_event,
+				 &event->touchpad_swipe.x_root,
+				 &event->touchpad_swipe.y_root);
+      event->touchpad_swipe.dx = source_event->touchpad_swipe.dx;
+      event->touchpad_swipe.dy = source_event->touchpad_swipe.dy;
+      event->touchpad_swipe.n_fingers = source_event->touchpad_swipe.n_fingers;
+      event->touchpad_swipe.phase = source_event->touchpad_swipe.phase;
+      break;
+
+    case GDK_TOUCHPAD_PINCH:
+      convert_toplevel_coords_to_window (event_win,
+                                         toplevel_x, toplevel_y,
+                                         &event->touchpad_pinch.x,
+                                         &event->touchpad_pinch.y);
+      gdk_event_get_root_coords (source_event,
+				 &event->touchpad_pinch.x_root,
+				 &event->touchpad_pinch.y_root);
+      event->touchpad_pinch.dx = source_event->touchpad_pinch.dx;
+      event->touchpad_pinch.dy = source_event->touchpad_pinch.dy;
+      event->touchpad_pinch.scale = source_event->touchpad_pinch.scale;
+      event->touchpad_pinch.angle_delta = source_event->touchpad_pinch.angle_delta;
+      event->touchpad_pinch.n_fingers = source_event->touchpad_pinch.n_fingers;
+      event->touchpad_pinch.phase = source_event->touchpad_pinch.phase;
+      break;
+
+    default:
+      break;
+    }
+
+  return TRUE;
+}
+
 #ifdef DEBUG_WINDOW_PRINTING
 
 #ifdef GDK_WINDOWING_X11
@@ -9273,7 +9569,8 @@ _gdk_windowing_got_event (GdkDisplay *display,
     }
 
   if (!(is_button_type (event->type) ||
-        is_motion_type (event->type)) ||
+        is_motion_type (event->type) ||
+        is_gesture_type (event->type)) ||
       event_window->window_type == GDK_WINDOW_ROOT)
     goto out;
 
@@ -9372,6 +9669,8 @@ _gdk_windowing_got_event (GdkDisplay *display,
     unlink_event = proxy_pointer_event (display, event, serial);
   else if (is_button_type (event->type))
     unlink_event = proxy_button_event (event, serial);
+  else if (is_gesture_type (event->type))
+    unlink_event = proxy_gesture_event (event, serial);
 
   if ((event->type == GDK_BUTTON_RELEASE ||
        event->type == GDK_TOUCH_END) &&
@@ -9728,6 +10027,8 @@ gdk_window_set_geometry_hints (GdkWindow         *window,
 			       const GdkGeometry *geometry,
 			       GdkWindowHints     geom_mask)
 {
+  g_return_if_fail (geometry != NULL || geom_mask == 0);
+
   GDK_WINDOW_IMPL_GET_CLASS (window->impl)->set_geometry_hints (window, geometry, geom_mask);
 }
 
@@ -9944,7 +10245,7 @@ gdk_window_set_event_compression (GdkWindow *window,
 {
   g_return_if_fail (GDK_IS_WINDOW (window));
 
-  window->event_compression = event_compression;
+  window->event_compression = !!event_compression;
 }
 
 /**
@@ -10149,6 +10450,32 @@ void
 gdk_window_fullscreen (GdkWindow *window)
 {
   GDK_WINDOW_IMPL_GET_CLASS (window->impl)->fullscreen (window);
+}
+
+/**
+ * gdk_window_fullscreen_on_monitor:
+ * @window: a toplevel #GdkWindow
+ * @monitor: Which monitor to display fullscreen on.
+ *
+ * Moves the window into fullscreen mode on the given monitor. This means
+ * the window covers the entire screen and is above any panels or task bars.
+ *
+ * If the window was already fullscreen, then this function does nothing.
+ * Since: UNRELEASED
+ **/
+void
+gdk_window_fullscreen_on_monitor (GdkWindow      *window,
+                                  gint            monitor)
+{
+  GdkScreen *screen = gdk_window_get_screen (window);
+
+  g_return_if_fail (monitor >= 0);
+  g_return_if_fail (monitor < gdk_screen_get_n_monitors (screen));
+
+  if (GDK_WINDOW_IMPL_GET_CLASS (window->impl)->fullscreen_on_monitor != NULL)
+    GDK_WINDOW_IMPL_GET_CLASS (window->impl)->fullscreen_on_monitor (window, monitor);
+  else
+    GDK_WINDOW_IMPL_GET_CLASS (window->impl)->fullscreen (window);
 }
 
 /**
@@ -10910,6 +11237,8 @@ gdk_window_flush_events (GdkFrameClock *clock,
   _gdk_display_pause_events (display);
 
   gdk_frame_clock_request_phase (clock, GDK_FRAME_CLOCK_PHASE_RESUME_EVENTS);
+
+  window->frame_clock_events_paused = TRUE;
 }
 
 static void
@@ -10936,6 +11265,8 @@ gdk_window_resume_events (GdkFrameClock *clock,
 
   display = gdk_window_get_display (window);
   _gdk_display_unpause_events (display);
+
+  window->frame_clock_events_paused = FALSE;
 }
 
 static void
@@ -10968,6 +11299,9 @@ gdk_window_set_frame_clock (GdkWindow     *window,
 
   if (window->frame_clock)
     {
+      if (window->frame_clock_events_paused)
+        gdk_window_resume_events (window->frame_clock, G_OBJECT (window));
+
       g_signal_handlers_disconnect_by_func (G_OBJECT (window->frame_clock),
                                             G_CALLBACK (gdk_window_flush_events),
                                             window);
@@ -11062,7 +11396,10 @@ gdk_window_get_unscaled_size (GdkWindow *window,
       impl_class = GDK_WINDOW_IMPL_GET_CLASS (window->impl);
 
       if (impl_class->get_unscaled_size)
-        return impl_class->get_unscaled_size (window, unscaled_width, unscaled_height);
+        {
+          impl_class->get_unscaled_size (window, unscaled_width, unscaled_height);
+          return;
+        }
     }
 
   scale = gdk_window_get_scale_factor (window);
@@ -11078,9 +11415,9 @@ gdk_window_get_unscaled_size (GdkWindow *window,
 /**
  * gdk_window_set_opaque_region:
  * @window: a top-level or non-native #GdkWindow
- * @region: a region
+ * @region: (allow-none):  a region, or %NULL
  *
- * For optimizization purposes, compositing window managers may
+ * For optimisation purposes, compositing window managers may
  * like to not draw obscured regions of windows, or turn off blending
  * during for these regions. With RGB windows with no transparency,
  * this is just the shape of the window, but with ARGB32 windows, the
@@ -11089,7 +11426,7 @@ gdk_window_get_unscaled_size (GdkWindow *window,
  *
  * This function only works for toplevel windows.
  *
- * GTK+ will automatically update this property automatically if
+ * GTK+ will update this property automatically if
  * the @window background is opaque, as we know where the opaque regions
  * are. If your window background is not opaque, please update this
  * property in your #GtkWidget::style-updated handler.
@@ -11108,7 +11445,7 @@ gdk_window_set_opaque_region (GdkWindow      *window,
   impl_class = GDK_WINDOW_IMPL_GET_CLASS (window->impl);
 
   if (impl_class->set_opaque_region)
-    return impl_class->set_opaque_region (window, region);
+    impl_class->set_opaque_region (window, region);
 }
 
 /**

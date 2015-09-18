@@ -29,6 +29,7 @@
 #include "gtkfilesystem.h"
 #include "gtkicontheme.h"
 #include "gtkprivate.h"
+#include "gtkintl.h"
 
 /* #define DEBUG_MODE */
 #ifdef DEBUG_MODE
@@ -120,8 +121,7 @@ gtk_file_system_dispose (GObject *object)
 
   if (priv->volumes)
     {
-      g_slist_foreach (priv->volumes, (GFunc) g_object_unref, NULL);
-      g_slist_free (priv->volumes);
+      g_slist_free_full (priv->volumes, g_object_unref);
       priv->volumes = NULL;
     }
 
@@ -143,7 +143,7 @@ _gtk_file_system_class_init (GtkFileSystemClass *class)
   object_class->dispose = gtk_file_system_dispose;
 
   fs_signals[VOLUMES_CHANGED] =
-    g_signal_new ("volumes-changed",
+    g_signal_new (I_("volumes-changed"),
 		  G_TYPE_FROM_CLASS (object_class),
 		  G_SIGNAL_RUN_LAST,
 		  G_STRUCT_OFFSET (GtkFileSystemClass, volumes_changed),
@@ -199,8 +199,7 @@ get_volumes_list (GtkFileSystem *file_system)
 
   if (priv->volumes)
     {
-      g_slist_foreach (priv->volumes, (GFunc) g_object_unref, NULL);
-      g_slist_free (priv->volumes);
+      g_slist_free_full (priv->volumes, g_object_unref);
       priv->volumes = NULL;
     }
 
@@ -772,29 +771,32 @@ _gtk_file_system_volume_render_icon (GtkFileSystemVolume  *volume,
   return surface;
 }
 
+GIcon *
+_gtk_file_system_volume_get_symbolic_icon (GtkFileSystemVolume *volume)
+{
+  if (IS_ROOT_VOLUME (volume))
+    return g_themed_icon_new ("drive-harddisk-symbolic");
+  else if (G_IS_DRIVE (volume))
+    return g_drive_get_symbolic_icon (G_DRIVE (volume));
+  else if (G_IS_VOLUME (volume))
+    return g_volume_get_symbolic_icon (G_VOLUME (volume));
+  else if (G_IS_MOUNT (volume))
+    return g_mount_get_symbolic_icon (G_MOUNT (volume));
+  else
+    return NULL;
+}
+
 cairo_surface_t *
 _gtk_file_system_volume_render_symbolic_icon (GtkFileSystemVolume  *volume,
 				              GtkWidget            *widget,
 				              gint                  icon_size,
 				              GError              **error)
 {
-  GIcon *icon = NULL;
+  GIcon *icon;
   cairo_surface_t *surface;
 
-  if (IS_ROOT_VOLUME (volume))
-    icon = g_themed_icon_new ("drive-harddisk-symbolic");
-  else if (G_IS_DRIVE (volume))
-    icon = g_drive_get_symbolic_icon (G_DRIVE (volume));
-  else if (G_IS_VOLUME (volume))
-    icon = g_volume_get_symbolic_icon (G_VOLUME (volume));
-  else if (G_IS_MOUNT (volume))
-    icon = g_mount_get_symbolic_icon (G_MOUNT (volume));
-
-  if (!icon)
-    return NULL;
-
+  icon = _gtk_file_system_volume_get_symbolic_icon (volume);
   surface = get_surface_from_gicon (icon, widget, icon_size, error);
-
   g_object_unref (icon);
 
   return surface;
@@ -920,4 +922,37 @@ _gtk_file_has_native_path (GFile *file)
   g_free (local_file_path);
 
   return has_native_path;
+}
+
+static const gchar * const remote_types[] = {
+  "afp",
+  "google-drive",
+  "sftp",
+  "webdav",
+  "ftp",
+  "nfs",
+  "cifs",
+  NULL
+};
+
+gboolean
+_gtk_file_consider_as_remote (GFile *file)
+{
+  GFileInfo *info;
+  gboolean is_remote;
+
+  info = g_file_query_filesystem_info (file, "filesystem::type", NULL, NULL);
+  if (info)
+    {
+      const gchar *type;
+
+      type = g_file_info_get_attribute_string (info, "filesystem::type");
+      is_remote = g_strv_contains (remote_types, type);
+
+      g_object_unref (info);
+    }
+  else
+    is_remote = FALSE;
+
+  return is_remote;
 }

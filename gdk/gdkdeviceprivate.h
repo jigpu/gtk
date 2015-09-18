@@ -57,6 +57,9 @@ struct _GdkDevice
   GdkDeviceType type;
   GArray *axes;
 
+  gchar *vendor_id;
+  gchar *product_id;
+
   GPtrArray *tools;
   GdkDeviceTool *last_tool;
 };

@@ -2,21 +2,18 @@
 <interface domain="gtk30">
   <!-- interface-requires gtk+ 3.10 -->
   <template class="GtkDialog" parent="GtkWindow">
-    <property name="can_focus">False</property>
     <property name="window_position">center-on-parent</property>
     <property name="type_hint">dialog</property>
     <signal name="delete-event" handler="gtk_dialog_delete_event_handler" swapped="no"/>
     <child type="titlebar">
       <object class="GtkHeaderBar" id="headerbar">
-        <property name="visible">True</property>
-        <property name="can_focus">False</property>
-        <property name="show-close-button">True</property>
+        <property name="visible">1</property>
+        <property name="show-close-button">1</property>
       </object>
     </child>
     <child>
       <object class="GtkBox" id="vbox">
-        <property name="visible">True</property>
-        <property name="can_focus">False</property>
+        <property name="visible">1</property>
         <property name="border_width">0</property>
         <property name="orientation">vertical</property>
         <style>
@@ -24,34 +21,26 @@
         </style>
         <child>
           <object class="GtkBox" id="action_box">
-            <property name="visible">True</property>
-            <property name="can_focus">False</property>
+            <property name="visible">1</property>
             <style>
               <class name="dialog-action-box"/>
             </style>
             <child>
               <object class="GtkButtonBox" id="action_area">
-                <property name="visible">True</property>
-                <property name="can_focus">False</property>
+                <property name="visible">1</property>
                 <property name="layout_style">end</property>
-                <property name="hexpand">True</property>
+                <property name="hexpand">1</property>
                 <style>
                   <class name="dialog-action-area"/>
                 </style>
               </object>
               <packing>
-                <property name="expand">False</property>
-                <property name="fill">True</property>
                 <property name="pack_type">end</property>
-                <property name="position">0</property>
               </packing>
             </child>
           </object>
           <packing>
-            <property name="expand">False</property>
-            <property name="fill">True</property>
             <property name="pack_type">end</property>
-            <property name="position">0</property>
           </packing>
         </child>
       </object>

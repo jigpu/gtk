@@ -43,7 +43,6 @@ struct _GdkWaylandDragContext
   GdkWindow *dnd_window;
   struct wl_surface *dnd_surface;
   struct wl_data_source *data_source;
-  struct wl_data_offer *offer;
   uint32_t serial;
   gdouble x;
   gdouble y;
@@ -65,13 +64,20 @@ gdk_wayland_drag_context_finalize (GObject *object)
 {
   GdkWaylandDragContext *wayland_context = GDK_WAYLAND_DRAG_CONTEXT (object);
   GdkDragContext *context = GDK_DRAG_CONTEXT (object);
-  GdkDisplay *display = gdk_window_get_display (context->source_window);
 
   contexts = g_list_remove (contexts, context);
 
-  if (context->is_source &&
-      gdk_selection_owner_get_for_display (display, gdk_drag_get_selection (context)) == context->source_window)
-    gdk_wayland_selection_unset_data_source (display, gdk_drag_get_selection (context));
+  if (context->is_source)
+    {
+      GdkDisplay *display = gdk_window_get_display (context->source_window);
+      GdkAtom selection;
+      GdkWindow *selection_owner;
+
+      selection = gdk_drag_get_selection (context);
+      selection_owner = gdk_selection_owner_get_for_display (display, selection);
+      if (selection_owner == context->source_window)
+        gdk_wayland_selection_unset_data_source (display, selection);
+    }
 
   if (wayland_context->data_source)
     wl_data_source_destroy (wayland_context->data_source);
@@ -196,8 +202,10 @@ gdk_wayland_drop_context_set_status (GdkDragContext *context,
   struct wl_data_offer *wl_offer;
 
   context_wayland = GDK_WAYLAND_DRAG_CONTEXT (context);
-  display = gdk_window_get_display (context->source_window);
-  wl_offer = gdk_wayland_selection_get_offer (display);
+
+  display = gdk_device_get_display (gdk_drag_context_get_device (context));
+  wl_offer = gdk_wayland_selection_get_offer (display,
+                                              gdk_drag_get_selection (context));
 
   if (!wl_offer)
     return;
@@ -214,8 +222,10 @@ gdk_wayland_drop_context_set_status (GdkDragContext *context,
 
       if (l)
         {
-          wl_data_offer_accept (wl_offer, context_wayland->serial,
-                                gdk_atom_name (l->data));
+          gchar *mimetype = gdk_atom_name (l->data);
+
+          wl_data_offer_accept (wl_offer, context_wayland->serial, mimetype);
+          g_free (mimetype);
           return;
         }
     }
@@ -236,7 +246,8 @@ gdk_wayland_drag_context_drop_reply (GdkDragContext *context,
 				     gboolean        accepted,
 				     guint32         time_)
 {
-  gdk_wayland_drop_context_set_status (context, accepted);
+  if (!accepted)
+    gdk_wayland_drop_context_set_status (context, accepted);
 }
 
 static void
@@ -244,10 +255,15 @@ gdk_wayland_drag_context_drop_finish (GdkDragContext *context,
 				      gboolean        success,
 				      guint32         time)
 {
-  GdkDisplay *display = gdk_window_get_display (context->source_window);
+  GdkDisplay *display = gdk_device_get_display (gdk_drag_context_get_device (context));
+  GdkAtom selection;
 
-  if (gdk_selection_owner_get_for_display (display, gdk_drag_get_selection (context)))
-    gdk_wayland_selection_unset_data_source (display, gdk_drag_get_selection (context));
+  selection = gdk_drag_get_selection (context);
+
+  if (gdk_selection_owner_get_for_display (display, selection))
+    gdk_wayland_selection_unset_data_source (display, selection);
+
+  gdk_wayland_selection_set_offer (display, selection, NULL);
 }
 
 static gboolean
@@ -352,7 +368,12 @@ _gdk_wayland_window_drag_begin (GdkWindow *window,
                                            gdk_wayland_drag_context_get_selection (context));
 
   for (l = context->targets; l; l = l->next)
-    wl_data_source_offer (context_wayland->data_source, gdk_atom_name (l->data));
+    {
+      gchar *mimetype = gdk_atom_name (l->data);
+
+      wl_data_source_offer (context_wayland->data_source, mimetype);
+      g_free (mimetype);
+    }
 
   wl_data_device_start_drag (gdk_wayland_device_get_data_device (device),
                              context_wayland->data_source,
@@ -382,9 +403,14 @@ _gdk_wayland_drop_context_new (GdkDevice             *device,
 void
 gdk_wayland_drop_context_update_targets (GdkDragContext *context)
 {
-  GdkDisplay *display = gdk_window_get_display (context->source_window);
+  GdkDisplay *display;
+  GdkDevice *device;
+
+  device = gdk_drag_context_get_device (context);
+  display = gdk_device_get_display (device);
   g_list_free (context->targets);
-  context->targets = g_list_copy (gdk_wayland_selection_get_targets (display));
+  context->targets = g_list_copy (gdk_wayland_selection_get_targets (display,
+                                                                     gdk_drag_get_selection (context)));
 }
 
 void
@@ -414,6 +440,9 @@ _gdk_wayland_drag_context_set_dest_window (GdkDragContext *context,
                                            GdkWindow      *dest_window,
                                            uint32_t        serial)
 {
+  if (context->dest_window)
+    g_object_unref (context->dest_window);
+
   context->dest_window = dest_window ? g_object_ref (dest_window) : NULL;
   GDK_WAYLAND_DRAG_CONTEXT (context)->serial = serial;
   gdk_wayland_drop_context_update_targets (context);
@@ -453,59 +482,6 @@ struct wl_data_source *
 gdk_wayland_drag_context_get_data_source (GdkDragContext *context)
 {
   return GDK_WAYLAND_DRAG_CONTEXT (context)->data_source;
-}
-
-void
-gdk_wayland_drag_context_undo_grab (GdkDragContext *context)
-{
-  GdkEventSequence *sequence;
-  GdkModifierType state;
-  GdkDevice *device;
-  GdkEvent *event;
-  guint button;
-  gdouble x, y;
-
-  device = gdk_drag_context_get_device (context);
-  _gdk_wayland_device_get_last_implicit_grab_serial (GDK_WAYLAND_DEVICE (device), &sequence);
-  gdk_window_get_device_position_double (gdk_drag_context_get_source_window (context),
-                                         device, &x, &y, &state);
-
-  if (sequence)
-    {
-      event = gdk_event_new (GDK_TOUCH_END);
-      event->touch.window = g_object_ref (gdk_drag_context_get_source_window (context));
-      event->touch.send_event = TRUE;
-      event->touch.sequence = sequence;
-      event->touch.time = GDK_CURRENT_TIME;
-      event->touch.x = event->touch.x_root = x;
-      event->touch.y = event->touch.y_root = y;
-    }
-  else if (state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK | GDK_BUTTON3_MASK))
-    {
-      if (state & GDK_BUTTON1_MASK)
-        button = 1;
-      else if (state & GDK_BUTTON2_MASK)
-        button = 2;
-      else if (state & GDK_BUTTON3_MASK)
-        button = 3;
-      else
-        return;
-
-      event = gdk_event_new (GDK_BUTTON_RELEASE);
-      event->button.window = g_object_ref (gdk_drag_context_get_source_window (context));
-      event->button.send_event = TRUE;
-      event->button.button = button;
-      event->button.time = GDK_CURRENT_TIME;
-      event->button.x = event->button.x_root = x;
-      event->button.y = event->button.x_root = y;
-    }
-  else
-    return;
-
-  gdk_event_set_device (event, device);
-  gdk_event_set_source_device (event, device);
-
-  _gdk_wayland_display_deliver_event (gdk_device_get_display (device), event);
 }
 
 GdkWindow *

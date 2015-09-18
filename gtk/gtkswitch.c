@@ -53,9 +53,10 @@
 #include "gtkactionhelper.h"
 #include "gtkwidgetprivate.h"
 
-#include <math.h>
+#include "fallback-c89.c"
 
 #define DEFAULT_SLIDER_WIDTH    (36)
+#define DEFAULT_SLIDER_HEIGHT   (22)
 
 struct _GtkSwitchPrivate
 {
@@ -66,10 +67,7 @@ struct _GtkSwitchPrivate
   GtkGesture *pan_gesture;
   GtkGesture *multipress_gesture;
 
-  gint handle_x;
-  gint offset;
-  gint drag_start;
-  gint drag_threshold;
+  double handle_pos;
   gint64 start_time;
   gint64 end_time;
   guint tick_id;
@@ -152,16 +150,13 @@ gtk_switch_on_frame_clock_update (GtkWidget     *widget,
   if (now < priv->end_time)
     {
       gdouble t;
-      gint dest_offset;
-
-      if (priv->is_active)
-        dest_offset = 0;
-      else
-        dest_offset = gtk_widget_get_allocated_width (GTK_WIDGET (sw)) / 2;
 
       t = (now - priv->start_time) / (gdouble) (priv->end_time - priv->start_time);
       t = ease_out_cubic (t);
-      priv->handle_x = priv->offset + t * (dest_offset - priv->offset);
+      if (priv->is_active)
+        priv->handle_pos = 1.0 - t;
+      else
+        priv->handle_pos = t;
     }
   else
     {
@@ -190,7 +185,6 @@ gtk_switch_begin_toggle_animation (GtkSwitch *sw)
       GdkFrameClock *clock = gtk_widget_get_frame_clock (GTK_WIDGET (sw));
       priv->start_time = gdk_frame_clock_get_frame_time (clock);
       priv->end_time = priv->start_time + 1000 * ANIMATION_DURATION;
-      priv->offset = priv->handle_x;
       if (priv->tick_id == 0)
         priv->tick_id = gtk_widget_add_tick_callback (GTK_WIDGET (sw),
                                                       gtk_switch_on_frame_clock_update,
@@ -214,11 +208,6 @@ gtk_switch_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
 
   gtk_widget_get_allocation (GTK_WIDGET (sw), &allocation);
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-
-  if (priv->is_active)
-    priv->offset = allocation.width / 2;
-  else
-    priv->offset = 0;
 
   /* If the press didn't happen in the draggable handle,
    * cancel the pan gesture right away
@@ -253,17 +242,15 @@ gtk_switch_pan_gesture_pan (GtkGesturePan   *gesture,
 {
   GtkWidget *widget = GTK_WIDGET (sw);
   GtkSwitchPrivate *priv = sw->priv;
-  GtkAllocation allocation;
   GtkStyleContext *context;
   GtkStateFlags state;
   GtkBorder padding;
-  gint width, position;
+  gint width;
 
   if (direction == GTK_PAN_DIRECTION_LEFT)
     offset = -offset;
 
   gtk_gesture_set_state (GTK_GESTURE (gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-  position = priv->offset + offset;
 
   context = gtk_widget_get_style_context (widget);
   state = gtk_widget_get_state_flags (widget);
@@ -274,17 +261,14 @@ gtk_switch_pan_gesture_pan (GtkGesturePan   *gesture,
   gtk_style_context_get_padding (context, state, &padding);
   gtk_style_context_restore (context);
 
-  gtk_widget_get_allocation (widget, &allocation);
+  width = gtk_widget_get_allocated_width (widget);
 
-  width = allocation.width;
-
+  if (priv->is_active)
+    offset += width / 2;
+  
+  offset /= width / 2;
   /* constrain the handle within the trough width */
-  if (position > (width / 2) - padding.right)
-    priv->handle_x = width / 2 - padding.right;
-  else if (position < padding.left)
-    priv->handle_x = 0;
-  else
-    priv->handle_x = position;
+  priv->handle_pos = CLAMP (offset, 0, 1.0);
 
   /* we need to redraw the handle */
   gtk_widget_queue_draw (widget);
@@ -299,7 +283,7 @@ gtk_switch_pan_gesture_drag_end (GtkGestureDrag *gesture,
   GtkSwitchPrivate *priv = sw->priv;
   GdkEventSequence *sequence;
   GtkAllocation allocation;
-  gboolean active = FALSE;
+  gboolean active;
 
   sequence = gtk_gesture_single_get_current_sequence (GTK_GESTURE_SINGLE (gesture));
 
@@ -310,19 +294,14 @@ gtk_switch_pan_gesture_drag_end (GtkGestureDrag *gesture,
       /* if half the handle passed the middle of the switch, then we
        * consider it to be on
        */
-      if ((priv->handle_x + (allocation.width / 4)) >= (allocation.width / 2))
-        active = TRUE;
+      active = priv->handle_pos >= 0.5;
     }
   else if (!gtk_gesture_handles_sequence (priv->multipress_gesture, sequence))
     active = priv->is_active;
   else
     return;
 
-  if (active)
-    priv->handle_x = allocation.width / 2;
-  else
-    priv->handle_x = 0;
-
+  priv->handle_pos = active ? 1.0 : 0.0;
   gtk_switch_set_active (sw, active);
   gtk_widget_queue_draw (GTK_WIDGET (sw));
 }
@@ -425,7 +404,7 @@ gtk_switch_get_preferred_height (GtkWidget *widget,
   GtkStyleContext *context;
   GtkStateFlags state;
   GtkBorder padding;
-  gint height, slider_width, min_height;
+  gint height, slider_height;
   PangoLayout *layout;
   PangoRectangle logical_rect;
   gchar *str;
@@ -444,10 +423,8 @@ gtk_switch_get_preferred_height (GtkWidget *widget,
   gtk_style_context_restore (context);
 
   gtk_widget_style_get (widget,
-                        "slider-width", &slider_width,
+                        "slider-height", &slider_height,
                         NULL);
-
-  min_height = slider_width * 0.6;
 
   str = g_strdup_printf ("%s%s",
                          C_("switch", "ON"),
@@ -456,7 +433,7 @@ gtk_switch_get_preferred_height (GtkWidget *widget,
   layout = gtk_widget_create_pango_layout (widget, str);
   pango_layout_get_extents (layout, NULL, &logical_rect);
   pango_extents_to_pixels (&logical_rect, NULL);
-  height += MAX (min_height, logical_rect.height);
+  height += MAX (slider_height, logical_rect.height);
 
   g_object_unref (layout);
   g_free (str);
@@ -479,11 +456,6 @@ gtk_switch_size_allocate (GtkWidget     *widget,
                             allocation->y,
                             allocation->width,
                             allocation->height);
-
-  if (priv->is_active)
-    priv->handle_x = gtk_widget_get_allocated_width (widget) / 2;
-  else
-    priv->handle_x = 0;
 
   _gtk_widget_set_simple_clip (widget, NULL);
 }
@@ -514,7 +486,6 @@ gtk_switch_realize (GtkWidget *widget)
   attributes.event_mask |= (GDK_BUTTON_PRESS_MASK |
                             GDK_BUTTON_RELEASE_MASK |
                             GDK_BUTTON1_MOTION_MASK |
-                            GDK_POINTER_MOTION_HINT_MASK |
                             GDK_POINTER_MOTION_MASK |
                             GDK_ENTER_NOTIFY_MASK |
                             GDK_LEAVE_NOTIFY_MASK);
@@ -657,7 +628,7 @@ gtk_switch_draw (GtkWidget *widget,
 
   g_object_unref (layout);
 
-  handle.x = x + priv->handle_x;
+  handle.x = x + round (priv->handle_pos * width / 2);
 
   gtk_switch_paint_handle (widget, cr, &handle);
 
@@ -958,6 +929,21 @@ gtk_switch_class_init (GtkSwitchClass *klass)
                                                              GTK_PARAM_READABLE));
 
   /**
+   * GtkSwitch:slider-height:
+   *
+   * The minimum height of the #GtkSwitch handle, in pixels.
+   *
+   * Since: 3.18
+   */
+  gtk_widget_class_install_style_property (widget_class,
+                                           g_param_spec_int ("slider-height",
+                                                             P_("Slider Height"),
+                                                             P_("The minimum height of the handle"),
+                                                             DEFAULT_SLIDER_HEIGHT, G_MAXINT,
+                                                             DEFAULT_SLIDER_HEIGHT,
+                                                             GTK_PARAM_READABLE));
+
+  /**
    * GtkSwitch::activate:
    * @widget: the object which received the signal.
    *
@@ -1019,11 +1005,13 @@ gtk_switch_class_init (GtkSwitchClass *klass)
 static void
 gtk_switch_init (GtkSwitch *self)
 {
+  GtkSwitchPrivate *priv;
   GtkStyleContext *context;
   GtkGesture *gesture;
 
-  self->priv = gtk_switch_get_instance_private (self);
-  self->priv->use_action_appearance = TRUE;
+  priv = self->priv = gtk_switch_get_instance_private (self);
+
+  priv->use_action_appearance = TRUE;
   gtk_widget_set_has_window (GTK_WIDGET (self), FALSE);
   gtk_widget_set_can_focus (GTK_WIDGET (self), TRUE);
 
@@ -1036,7 +1024,7 @@ gtk_switch_init (GtkSwitch *self)
                     G_CALLBACK (gtk_switch_multipress_gesture_released), self);
   gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (gesture),
                                               GTK_PHASE_BUBBLE);
-  self->priv->multipress_gesture = gesture;
+  priv->multipress_gesture = gesture;
 
   gesture = gtk_gesture_pan_new (GTK_WIDGET (self),
                                  GTK_ORIENTATION_HORIZONTAL);
@@ -1048,7 +1036,7 @@ gtk_switch_init (GtkSwitch *self)
                     G_CALLBACK (gtk_switch_pan_gesture_drag_end), self);
   gtk_event_controller_set_propagation_phase (GTK_EVENT_CONTROLLER (gesture),
                                               GTK_PHASE_BUBBLE);
-  self->priv->pan_gesture = gesture;
+  priv->pan_gesture = gesture;
 
   context = gtk_widget_get_style_context (GTK_WIDGET (self));
   gtk_style_context_add_class (context, GTK_STYLE_CLASS_TROUGH);
@@ -1100,13 +1088,13 @@ gtk_switch_set_active (GtkSwitch *sw,
       priv->is_active = is_active;
 
       if (priv->is_active)
-        priv->handle_x = gtk_widget_get_allocated_width (GTK_WIDGET (sw)) / 2;
+        priv->handle_pos = 1.0;
       else
-        priv->handle_x = 0;
-
-      g_object_notify_by_pspec (G_OBJECT (sw), switch_props[PROP_ACTIVE]);
+        priv->handle_pos = 0.0;
 
       g_signal_emit (sw, signals[STATE_SET], 0, is_active, &handled);
+
+      g_object_notify_by_pspec (G_OBJECT (sw), switch_props[PROP_ACTIVE]);
 
       accessible = gtk_widget_get_accessible (GTK_WIDGET (sw));
       atk_object_notify_state_change (accessible, ATK_STATE_CHECKED, priv->is_active);

@@ -21,7 +21,7 @@
 
 #include "gtkcssimageprivate.h"
 
-#include "gtkcsscomputedvaluesprivate.h"
+#include "gtkcssstyleprivate.h"
 
 /* for the types only */
 #include "gtk/gtkcssimagecrossfadeprivate.h"
@@ -64,10 +64,8 @@ static GtkCssImage *
 gtk_css_image_real_compute (GtkCssImage             *image,
                             guint                    property_id,
                             GtkStyleProviderPrivate *provider,
-			    int                      scale,
-                            GtkCssComputedValues    *values,
-                            GtkCssComputedValues    *parent_values,
-                            GtkCssDependencies      *dependencies)
+                            GtkCssStyle             *style,
+                            GtkCssStyle             *parent_style)
 {
   return g_object_ref (image);
 }
@@ -89,6 +87,8 @@ gtk_css_image_real_transition (GtkCssImage *start,
     return g_object_ref (start);
   else if (progress >= 1.0)
     return end ? g_object_ref (end) : NULL;
+  else if (_gtk_css_image_equal (start, end))
+    return g_object_ref (start);
   else
     return _gtk_css_image_cross_fade_new (start, end, progress);
 }
@@ -149,25 +149,18 @@ GtkCssImage *
 _gtk_css_image_compute (GtkCssImage             *image,
                         guint                    property_id,
                         GtkStyleProviderPrivate *provider,
-			int                      scale,
-                        GtkCssComputedValues    *values,
-                        GtkCssComputedValues    *parent_values,
-                        GtkCssDependencies      *dependencies)
+                        GtkCssStyle             *style,
+                        GtkCssStyle             *parent_style)
 {
-  GtkCssDependencies unused;
   GtkCssImageClass *klass;
 
   g_return_val_if_fail (GTK_IS_CSS_IMAGE (image), NULL);
-  g_return_val_if_fail (GTK_IS_CSS_COMPUTED_VALUES (values), NULL);
-  g_return_val_if_fail (parent_values == NULL || GTK_IS_CSS_COMPUTED_VALUES (parent_values), NULL);
-
-  if (dependencies == NULL)
-    dependencies = &unused;
-  *dependencies = 0;
+  g_return_val_if_fail (GTK_IS_CSS_STYLE (style), NULL);
+  g_return_val_if_fail (parent_style == NULL || GTK_IS_CSS_STYLE (parent_style), NULL);
 
   klass = GTK_CSS_IMAGE_GET_CLASS (image);
 
-  return klass->compute (image, property_id, provider, scale, values, parent_values, dependencies);
+  return klass->compute (image, property_id, provider, style, parent_style);
 }
 
 GtkCssImage *

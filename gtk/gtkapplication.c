@@ -69,7 +69,7 @@
  * that the GDK lock be held while invoking actions locally with
  * g_action_group_activate_action().  The same applies to actions
  * associated with #GtkApplicationWindow and to the “activate” and
- * 'open' #GApplication methods.
+ * “open” #GApplication methods.
  *
  * ## Automatic resources ## {#automatic-resources}
  *
@@ -111,6 +111,10 @@
  * manager may not honor the inhibitor, but it can be expected to
  * inform the user about the negative consequences of ending the
  * session while inhibitors are present.
+ *
+ * ## See Also ## {#seealso}
+ * [HowDoI: Using GtkApplication](https://wiki.gnome.org/HowDoI/GtkApplication),
+ * [Getting Started with GTK+: Basics](https://developer.gnome.org/gtk3/stable/gtk-getting-started.html#id-1.2.3.3)
  */
 
 enum {
@@ -126,8 +130,11 @@ enum {
   PROP_REGISTER_SESSION,
   PROP_APP_MENU,
   PROP_MENUBAR,
-  PROP_ACTIVE_WINDOW
+  PROP_ACTIVE_WINDOW,
+  NUM_PROPERTIES
 };
+
+static GParamSpec *gtk_application_props[NUM_PROPERTIES];
 
 /* Accel handling */
 typedef struct
@@ -410,7 +417,6 @@ accels_set_accels_for_action (Accels              *accels,
   if (keys)
     {
       gchar *my_key;
-      gint i;
 
       my_key = g_strdup (action_and_target);
 
@@ -502,8 +508,10 @@ gtk_application_focus_in_event_cb (GtkWindow      *window,
       priv->windows = g_list_concat (link, priv->windows);
     }
 
-  gtk_application_impl_active_window_changed (application->priv->impl, window);
-  g_object_notify (G_OBJECT (application), "active-window");
+  if (application->priv->impl)
+    gtk_application_impl_active_window_changed (application->priv->impl, window);
+
+  g_object_notify_by_pspec (G_OBJECT (application), gtk_application_props[PROP_ACTIVE_WINDOW]);
 
   return FALSE;
 }
@@ -703,7 +711,7 @@ gtk_application_window_added (GtkApplication *application,
   gtk_application_impl_window_added (application->priv->impl, window);
 
   gtk_application_impl_active_window_changed (application->priv->impl, window);
-  g_object_notify (G_OBJECT (application), "active-window");
+  g_object_notify_by_pspec (G_OBJECT (application), gtk_application_props[PROP_ACTIVE_WINDOW]);
 }
 
 static void
@@ -728,7 +736,7 @@ gtk_application_window_removed (GtkApplication *application,
   if (priv->windows != old_active)
     {
       gtk_application_impl_active_window_changed (application->priv->impl, priv->windows ? priv->windows->data : NULL);
-      g_object_notify (G_OBJECT (application), "active-window");
+      g_object_notify_by_pspec (G_OBJECT (application), gtk_application_props[PROP_ACTIVE_WINDOW]);
     }
 }
 
@@ -896,7 +904,7 @@ gtk_application_class_init (GtkApplicationClass *class)
    * Since: 3.2
    */
   gtk_application_signals[WINDOW_ADDED] =
-    g_signal_new ("window-added", GTK_TYPE_APPLICATION, G_SIGNAL_RUN_FIRST,
+    g_signal_new (I_("window-added"), GTK_TYPE_APPLICATION, G_SIGNAL_RUN_FIRST,
                   G_STRUCT_OFFSET (GtkApplicationClass, window_added),
                   NULL, NULL,
                   g_cclosure_marshal_VOID__OBJECT,
@@ -914,7 +922,7 @@ gtk_application_class_init (GtkApplicationClass *class)
    * Since: 3.2
    */
   gtk_application_signals[WINDOW_REMOVED] =
-    g_signal_new ("window-removed", GTK_TYPE_APPLICATION, G_SIGNAL_RUN_FIRST,
+    g_signal_new (I_("window-removed"), GTK_TYPE_APPLICATION, G_SIGNAL_RUN_FIRST,
                   G_STRUCT_OFFSET (GtkApplicationClass, window_removed),
                   NULL, NULL,
                   g_cclosure_marshal_VOID__OBJECT,
@@ -927,32 +935,35 @@ gtk_application_class_init (GtkApplicationClass *class)
    *
    * Since: 3.4
    */
-  g_object_class_install_property (object_class, PROP_REGISTER_SESSION,
+  gtk_application_props[PROP_REGISTER_SESSION] =
     g_param_spec_boolean ("register-session",
                           P_("Register session"),
                           P_("Register with the session manager"),
-                          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+                          FALSE,
+                          G_PARAM_READWRITE|G_PARAM_STATIC_STRINGS);
 
-  g_object_class_install_property (object_class, PROP_APP_MENU,
+  gtk_application_props[PROP_APP_MENU] =
     g_param_spec_object ("app-menu",
                          P_("Application menu"),
                          P_("The GMenuModel for the application menu"),
                          G_TYPE_MENU_MODEL,
-                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+                         G_PARAM_READWRITE|G_PARAM_STATIC_STRINGS);
 
-  g_object_class_install_property (object_class, PROP_MENUBAR,
+  gtk_application_props[PROP_MENUBAR] =
     g_param_spec_object ("menubar",
                          P_("Menubar"),
                          P_("The GMenuModel for the menubar"),
                          G_TYPE_MENU_MODEL,
-                         G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+                         G_PARAM_READWRITE|G_PARAM_STATIC_STRINGS);
 
-  g_object_class_install_property (object_class, PROP_ACTIVE_WINDOW,
+  gtk_application_props[PROP_ACTIVE_WINDOW] =
     g_param_spec_object ("active-window",
                          P_("Active window"),
                          P_("The window which most recently had focus"),
                          GTK_TYPE_WINDOW,
-                         G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+                         G_PARAM_READABLE|G_PARAM_STATIC_STRINGS);
+
+  g_object_class_install_properties (object_class, NUM_PROPERTIES, gtk_application_props);
 }
 
 /**
@@ -1122,7 +1133,7 @@ gtk_application_get_window_by_id (GtkApplication *application,
  *
  * The active window is the one that was most recently focused (within
  * the application).  This window may not have the focus at the moment
- * if another application has it -- this is just the most
+ * if another application has it — this is just the most
  * recently-focused window within this application.
  *
  * Returns: (transfer none): the active window
@@ -1325,7 +1336,7 @@ gtk_application_set_app_menu (GtkApplication *application,
 
       gtk_application_impl_set_app_menu (application->priv->impl, app_menu);
 
-      g_object_notify (G_OBJECT (application), "app-menu");
+      g_object_notify_by_pspec (G_OBJECT (application), gtk_application_props[PROP_APP_MENU]);
     }
 }
 
@@ -1365,12 +1376,12 @@ gtk_application_get_app_menu (GtkApplication *application)
  * each window, or at the top of the screen.  In some environments, if
  * both the application menu and the menubar are set, the application
  * menu will be presented as if it were the first item of the menubar.
- * Other environments treat the two as completely separate -- for
- * example, the application menu may be rendered by the desktop shell
- * while the menubar (if set) remains in each individual window.
+ * Other environments treat the two as completely separate — for example,
+ * the application menu may be rendered by the desktop shell while the
+ * menubar (if set) remains in each individual window.
  *
- * Use the base #GActionMap interface to add actions, to respond to the user
- * selecting these menu items.
+ * Use the base #GActionMap interface to add actions, to respond to the
+ * user selecting these menu items.
  *
  * Since: 3.4
  */
@@ -1397,7 +1408,7 @@ gtk_application_set_menubar (GtkApplication *application,
 
       gtk_application_impl_set_menubar (application->priv->impl, menubar);
 
-      g_object_notify (G_OBJECT (application), "menubar");
+      g_object_notify_by_pspec (G_OBJECT (application), gtk_application_props[PROP_MENUBAR]);
     }
 }
 
@@ -1626,11 +1637,11 @@ normalise_detailed_name (const gchar *detailed_action_name)
  * @application: a #GtkApplication
  * @detailed_action_name: a detailed action name, specifying an action
  *     and target to associate accelerators with
- * @accels: (array zero-terminated=1): a list of accelerators in the format understood by
- *     gtk_accelerator_parse()
+ * @accels: (array zero-terminated=1): a list of accelerators in the format
+ *     understood by gtk_accelerator_parse()
  *
  * Sets zero or more keyboard accelerators that will trigger the
- * given action. The first item in @accels will be the primary 
+ * given action. The first item in @accels will be the primary
  * accelerator, which may be displayed in the UI.
  *
  * To remove all accelerators for an action, use an empty, zero-terminated
@@ -1774,14 +1785,16 @@ void
 gtk_application_handle_window_realize (GtkApplication *application,
                                        GtkWindow      *window)
 {
-  gtk_application_impl_handle_window_realize (application->priv->impl, window);
+  if (application->priv->impl)
+    gtk_application_impl_handle_window_realize (application->priv->impl, window);
 }
 
 void
 gtk_application_handle_window_map (GtkApplication *application,
                                    GtkWindow      *window)
 {
-  gtk_application_impl_handle_window_map (application->priv->impl, window);
+  if (application->priv->impl)
+    gtk_application_impl_handle_window_map (application->priv->impl, window);
 }
 
 /**

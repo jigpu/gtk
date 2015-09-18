@@ -570,6 +570,24 @@ gdk_event_new (GdkEventType type)
       new_event->crossing.x_root = 0.;
       new_event->crossing.y_root = 0.;
       break;
+    case GDK_TOUCHPAD_SWIPE:
+      new_event->touchpad_swipe.x = 0;
+      new_event->touchpad_swipe.y = 0;
+      new_event->touchpad_swipe.dx = 0;
+      new_event->touchpad_swipe.dy = 0;
+      new_event->touchpad_swipe.x_root = 0;
+      new_event->touchpad_swipe.y_root = 0;
+      break;
+    case GDK_TOUCHPAD_PINCH:
+      new_event->touchpad_pinch.x = 0;
+      new_event->touchpad_pinch.y = 0;
+      new_event->touchpad_pinch.dx = 0;
+      new_event->touchpad_pinch.dy = 0;
+      new_event->touchpad_pinch.angle_delta = 0;
+      new_event->touchpad_pinch.scale = 0;
+      new_event->touchpad_pinch.x_root = 0;
+      new_event->touchpad_pinch.y_root = 0;
+      break;
     default:
       break;
     }
@@ -640,9 +658,9 @@ gdk_event_copy (const GdkEvent *event)
       GdkEventPrivate *private = (GdkEventPrivate *)event;
 
       new_private->screen = private->screen;
-      new_private->device = private->device;
-      new_private->source_device = private->source_device;
-      new_private->tool = private->tool;
+      new_private->device = private->device ? g_object_ref (private->device) : NULL;
+      new_private->source_device = private->source_device ? g_object_ref (private->source_device) : NULL;
+      new_private->tool = private->tool ? g_object_ref (private->tool) : NULL;
     }
 
   switch (event->any.type)
@@ -737,9 +755,17 @@ gdk_event_copy (const GdkEvent *event)
 void
 gdk_event_free (GdkEvent *event)
 {
+  GdkEventPrivate *private;
   GdkDisplay *display;
 
   g_return_if_fail (event != NULL);
+
+  if (gdk_event_is_allocated (event))
+    {
+      private = (GdkEventPrivate *) event;
+      g_clear_object (&private->device);
+      g_clear_object (&private->source_device);
+    }
 
   switch (event->any.type)
     {
@@ -864,6 +890,10 @@ gdk_event_get_time (const GdkEvent *event)
       case GDK_TOUCH_END:
       case GDK_TOUCH_CANCEL:
         return event->touch.time;
+      case GDK_TOUCHPAD_SWIPE:
+        return event->touchpad_swipe.time;
+      case GDK_TOUCHPAD_PINCH:
+        return event->touchpad_pinch.time;
       case GDK_SCROLL:
         return event->scroll.time;
       case GDK_KEY_PRESS:
@@ -947,6 +977,12 @@ gdk_event_get_state (const GdkEvent        *event,
       case GDK_TOUCH_CANCEL:
         *state = event->touch.state;
         return TRUE;
+      case GDK_TOUCHPAD_SWIPE:
+        *state = event->touchpad_swipe.state;
+        return TRUE;
+      case GDK_TOUCHPAD_PINCH:
+        *state = event->touchpad_pinch.state;
+        return TRUE;
       case GDK_SCROLL:
 	*state =  event->scroll.state;
         return TRUE;
@@ -997,8 +1033,8 @@ gdk_event_get_state (const GdkEvent        *event,
 /**
  * gdk_event_get_coords:
  * @event: a #GdkEvent
- * @x_win: (out): location to put event window x coordinate
- * @y_win: (out): location to put event window y coordinate
+ * @x_win: (out) (optional): location to put event window x coordinate
+ * @y_win: (out) (optional): location to put event window y coordinate
  * 
  * Extract the event window relative x/y coordinates from an event.
  * 
@@ -1047,6 +1083,14 @@ gdk_event_get_coords (const GdkEvent *event,
       x = event->motion.x;
       y = event->motion.y;
       break;
+    case GDK_TOUCHPAD_SWIPE:
+      x = event->touchpad_swipe.x;
+      y = event->touchpad_swipe.y;
+      break;
+    case GDK_TOUCHPAD_PINCH:
+      x = event->touchpad_pinch.x;
+      y = event->touchpad_pinch.y;
+      break;
     default:
       fetched = FALSE;
       break;
@@ -1063,8 +1107,8 @@ gdk_event_get_coords (const GdkEvent *event,
 /**
  * gdk_event_get_root_coords:
  * @event: a #GdkEvent
- * @x_root: (out): location to put root window x coordinate
- * @y_root: (out): location to put root window y coordinate
+ * @x_root: (out) (optional): location to put root window x coordinate
+ * @y_root: (out) (optional): location to put root window y coordinate
  * 
  * Extract the root window relative x/y coordinates from an event.
  * 
@@ -1117,6 +1161,14 @@ gdk_event_get_root_coords (const GdkEvent *event,
     case GDK_DROP_FINISHED:
       x = event->dnd.x_root;
       y = event->dnd.y_root;
+      break;
+    case GDK_TOUCHPAD_SWIPE:
+      x = event->touchpad_swipe.x_root;
+      y = event->touchpad_swipe.y_root;
+      break;
+    case GDK_TOUCHPAD_PINCH:
+      x = event->touchpad_pinch.x_root;
+      y = event->touchpad_pinch.y_root;
       break;
     default:
       fetched = FALSE;
@@ -1476,7 +1528,7 @@ gdk_event_set_device (GdkEvent  *event,
 
   private = (GdkEventPrivate *) event;
 
-  private->device = device;
+  g_set_object (&private->device, device);
 
   switch (event->type)
     {
@@ -1629,7 +1681,7 @@ gdk_event_set_source_device (GdkEvent  *event,
 
   private = (GdkEventPrivate *) event;
 
-  private->source_device = device;
+  g_set_object (&private->source_device, device);
 }
 
 /**

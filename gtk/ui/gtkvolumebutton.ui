@@ -7,12 +7,12 @@
     <property name="page_increment">0.2</property>
   </object>
   <template class="GtkVolumeButton" parent="GtkScaleButton">
-    <property name="visible">True</property>
-    <property name="can_focus">True</property>
-    <property name="receives_default">True</property>
-    <property name="has_tooltip">True</property>
+    <property name="visible">1</property>
+    <property name="can_focus">1</property>
+    <property name="receives_default">1</property>
+    <property name="has_tooltip">1</property>
     <property name="relief">none</property>
-    <property name="focus_on_click">False</property>
+    <property name="focus_on_click">0</property>
     <property name="orientation">vertical</property>
     <property name="adjustment">adjustment</property>
     <property name="icons">audio-volume-muted

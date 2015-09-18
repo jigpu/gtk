@@ -72,14 +72,14 @@ static void
 print_keysym_tab (void)
 {
   gint vk;
-  
+
   g_print ("keymap:%s%s\n",
 	   _gdk_keyboard_has_altgr ? " (uses AltGr)" : "",
 	   (gdk_shift_modifiers & GDK_LOCK_MASK) ? " (has ShiftLock)" : "");
   for (vk = 0; vk < KEY_STATE_SIZE; vk++)
     {
       gint state;
-      
+
       g_print ("%#.02x: ", vk);
       for (state = 0; state < 4; state++)
 	{
@@ -164,6 +164,8 @@ handle_special (guint  vk,
       *ksymp = GDK_KEY_Meta_R; break;
     case VK_APPS:
       *ksymp = GDK_KEY_Menu; break;
+    case VK_DECIMAL:
+      *ksymp = GDK_KEY_KP_Decimal; break;
     case VK_MULTIPLY:
       *ksymp = GDK_KEY_KP_Multiply; break;
     case VK_ADD:
@@ -387,7 +389,7 @@ update_keymap (void)
 	  for (shift = 0; shift < 4; shift++)
 	    {
 	      guint *ksymp = keysym_tab + vk*4 + shift;
-	      
+
 	      set_shift_vks (key_state, shift);
 
 	      *ksymp = 0;
@@ -468,7 +470,7 @@ update_keymap (void)
 		(keysym_tab[vk*4 + 3] != GDK_KEY_VoidSymbol &&
 		 keysym_tab[vk*4 + 1] != keysym_tab[vk*4 + 3]))
 	      _gdk_keyboard_has_altgr = TRUE;
-	  
+
 	  if (!capslock_tested)
 	    {
 	      /* Can we use this virtual key to determine the CapsLock
@@ -483,9 +485,9 @@ update_keymap (void)
 		  keysym_tab[vk*4 + 1] != gdk_keyval_to_upper (keysym_tab[vk*4 + 0]))
 		{
 		  guchar chars[2];
-		  
+
 		  capslock_tested = TRUE;
-		  
+
 		  key_state[VK_SHIFT] = 0;
 		  key_state[VK_CONTROL] = key_state[VK_MENU] = 0;
 		  key_state[VK_CAPITAL] = 1;
@@ -502,12 +504,12 @@ update_keymap (void)
 			}
 		    }
 		  key_state[VK_CAPITAL] = 0;
-		}    
+		}
 	    }
 	}
     }
   GDK_NOTE (EVENTS, print_keysym_tab ());
-} 
+}
 
 GdkKeymap*
 _gdk_win32_display_get_keymap (GdkDisplay *display)
@@ -564,6 +566,12 @@ gdk_win32_keymap_get_num_lock_state (GdkKeymap *keymap)
 }
 
 static gboolean
+gdk_win32_keymap_get_scroll_lock_state (GdkKeymap *keymap)
+{
+  return ((GetKeyState (VK_SCROLL) & 1) != 0);
+}
+
+static gboolean
 gdk_win32_keymap_get_entries_for_keyval (GdkKeymap     *keymap,
                                    guint          keyval,
                                    GdkKeymapKey **keys,
@@ -575,14 +583,14 @@ gdk_win32_keymap_get_entries_for_keyval (GdkKeymap     *keymap,
   g_return_val_if_fail (keys != NULL, FALSE);
   g_return_val_if_fail (n_keys != NULL, FALSE);
   g_return_val_if_fail (keyval != 0, FALSE);
-  
+
   retval = g_array_new (FALSE, FALSE, sizeof (GdkKeymapKey));
 
   /* Accept only the default keymap */
   if (keymap == NULL || keymap == gdk_keymap_get_default ())
     {
       gint vk;
-      
+
       update_keymap ();
 
       for (vk = 0; vk < KEY_STATE_SIZE; vk++)
@@ -594,13 +602,13 @@ gdk_win32_keymap_get_entries_for_keyval (GdkKeymap     *keymap,
 	      if (keysym_tab[vk*4+i] == keyval)
 		{
 		  GdkKeymapKey key;
-		  
+
 		  key.keycode = vk;
-		  
+
 		  /* 2 levels (normal, shift), two groups (normal, AltGr) */
 		  key.group = i / 2;
 		  key.level = i % 2;
-		  
+
 		  g_array_append_val (retval, key);
 		}
 	    }
@@ -633,7 +641,7 @@ gdk_win32_keymap_get_entries_for_keyval (GdkKeymap     *keymap,
       *keys = NULL;
       *n_keys = 0;
     }
-      
+
   g_array_free (retval, retval->len > 0 ? FALSE : TRUE);
 
   return *n_keys > 0;
@@ -663,17 +671,17 @@ gdk_win32_keymap_get_entries_for_keycode (GdkKeymap     *keymap,
       *n_entries = 0;
       return FALSE;
     }
-  
+
   if (keys)
     key_array = g_array_new (FALSE, FALSE, sizeof (GdkKeymapKey));
   else
     key_array = NULL;
-  
+
   if (keyvals)
     keyval_array = g_array_new (FALSE, FALSE, sizeof (guint));
   else
     keyval_array = NULL;
-  
+
   /* Accept only the default keymap */
   if (keymap == NULL || keymap == gdk_keymap_get_default ())
     {
@@ -686,12 +694,12 @@ gdk_win32_keymap_get_entries_for_keycode (GdkKeymap     *keymap,
 	  if (key_array)
             {
               GdkKeymapKey key;
-	      
+
               key.keycode = hardware_keycode;
-              
+
               key.group = i / 2;
               key.level = i % 2;
-              
+
               g_array_append_val (key_array, key);
             }
 
@@ -721,7 +729,7 @@ gdk_win32_keymap_get_entries_for_keycode (GdkKeymap     *keymap,
 
       if (keyvals)
         *keyvals = NULL;
-      
+
       *n_entries = 0;
     }
 
@@ -742,20 +750,20 @@ gdk_win32_keymap_lookup_key (GdkKeymap          *keymap,
   g_return_val_if_fail (keymap == NULL || GDK_IS_KEYMAP (keymap), 0);
   g_return_val_if_fail (key != NULL, 0);
   g_return_val_if_fail (key->group < 4, 0);
-  
+
   /* Accept only the default keymap */
   if (keymap != NULL && keymap != gdk_keymap_get_default ())
     return 0;
 
   update_keymap ();
-  
+
   if (key->keycode >= KEY_STATE_SIZE ||
       key->group < 0 || key->group >= 2 ||
       key->level < 0 || key->level >= 2)
     return 0;
-  
+
   sym = keysym_tab[key->keycode*4 + key->group*2 + key->level];
-  
+
   if (sym == GDK_KEY_VoidSymbol)
     return 0;
   else
@@ -777,10 +785,10 @@ gdk_win32_keymap_translate_keyboard_state (GdkKeymap       *keymap,
   gint shift_level;
   gboolean ignore_shift = FALSE;
   gboolean ignore_group = FALSE;
-      
+
   g_return_val_if_fail (keymap == NULL || GDK_IS_KEYMAP (keymap), FALSE);
   g_return_val_if_fail (group < 4, FALSE);
-  
+
 #if 0
   GDK_NOTE (EVENTS, g_print ("gdk_keymap_translate_keyboard_state: keycode=%#x state=%#x group=%d\n",
 			     hardware_keycode, state, group));
@@ -890,7 +898,7 @@ gdk_win32_keymap_translate_keyboard_state (GdkKeymap       *keymap,
 	(ignore_group ? 0 : GDK_MOD2_MASK) |
 	(ignore_shift ? 0 : (GDK_SHIFT_MASK|GDK_LOCK_MASK));
     }
-				
+
 #if 0
   GDK_NOTE (EVENTS, g_print ("... group=%d level=%d cmods=%#x keyval=%s\n",
 			     group, shift_level, tmp_modifiers, gdk_keyval_name (tmp_keyval)));
@@ -930,6 +938,7 @@ gdk_win32_keymap_class_init (GdkWin32KeymapClass *klass)
   keymap_class->have_bidi_layouts = gdk_win32_keymap_have_bidi_layouts;
   keymap_class->get_caps_lock_state = gdk_win32_keymap_get_caps_lock_state;
   keymap_class->get_num_lock_state = gdk_win32_keymap_get_num_lock_state;
+  keymap_class->get_scroll_lock_state = gdk_win32_keymap_get_scroll_lock_state;
   keymap_class->get_entries_for_keyval = gdk_win32_keymap_get_entries_for_keyval;
   keymap_class->get_entries_for_keycode = gdk_win32_keymap_get_entries_for_keycode;
   keymap_class->lookup_key = gdk_win32_keymap_lookup_key;

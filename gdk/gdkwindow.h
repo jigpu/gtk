@@ -654,6 +654,12 @@ GDK_AVAILABLE_IN_ALL
 void gdk_window_merge_child_input_shapes   (GdkWindow       *window);
 
 
+GDK_AVAILABLE_IN_3_18
+void gdk_window_set_pass_through (GdkWindow *window,
+                                  gboolean   pass_through);
+GDK_AVAILABLE_IN_3_18
+gboolean gdk_window_get_pass_through (GdkWindow *window);
+
 /*
  * Check if a window has been shown, and whether all its
  * parents up to a toplevel have been shown, respectively.
@@ -946,6 +952,9 @@ GDK_AVAILABLE_IN_ALL
 void          gdk_window_unmaximize      (GdkWindow       *window);
 GDK_AVAILABLE_IN_ALL
 void          gdk_window_fullscreen      (GdkWindow       *window);
+GDK_AVAILABLE_IN_3_18
+void          gdk_window_fullscreen_on_monitor (GdkWindow      *window,
+                                                gint            monitor);
 GDK_AVAILABLE_IN_3_8
 void          gdk_window_set_fullscreen_mode (GdkWindow   *window,
                                           GdkFullscreenMode mode);
@@ -1113,9 +1122,7 @@ gboolean  gdk_window_show_window_menu          (GdkWindow      *window,
 
 GDK_AVAILABLE_IN_3_16
 GdkGLContext * gdk_window_create_gl_context    (GdkWindow      *window,
-                                                GdkGLProfile    profile,
                                                 GError        **error);
-
 
 G_END_DECLS
 

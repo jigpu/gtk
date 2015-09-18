@@ -1586,7 +1586,7 @@ gtk_css_provider_init (GtkCssProvider *css_provider)
                                                  (GDestroyNotify) _gtk_css_value_unref);
   priv->keyframes = g_hash_table_new_full (g_str_hash, g_str_equal,
                                            (GDestroyNotify) g_free,
-                                           (GDestroyNotify) _gtk_css_value_unref);
+                                           (GDestroyNotify) _gtk_css_keyframes_unref);
 }
 
 static void
@@ -1638,15 +1638,20 @@ verify_tree_get_change_results (GtkCssProvider *provider,
     int i;
 
     tree_rules = _gtk_css_selector_tree_match_all (provider->priv->tree, matcher);
-    verify_tree_match_results (provider, matcher, tree_rules);
-
-    for (i = tree_rules->len - 1; i >= 0; i--)
+    if (tree_rules)
       {
-	GtkCssRuleset *ruleset;
+        verify_tree_match_results (provider, matcher, tree_rules);
 
-	ruleset = tree_rules->pdata[i];
+        for (i = tree_rules->len - 1; i >= 0; i--)
+          {
+	    GtkCssRuleset *ruleset;
 
-	verify_change |= _gtk_css_selector_get_change (ruleset->selector);
+            ruleset = tree_rules->pdata[i];
+
+            verify_change |= _gtk_css_selector_get_change (ruleset->selector);
+          }
+
+        g_ptr_array_free (tree_rules, TRUE);
       }
 
     if (change != verify_change)
@@ -1654,16 +1659,23 @@ verify_tree_get_change_results (GtkCssProvider *provider,
 	GString *s;
 
 	s = g_string_new ("");
-	g_string_append_printf (s, "expected change 0x%x, but it was 0x%x", verify_change, change);
+	g_string_append (s, "expected change ");
+        gtk_css_change_print (verify_change, s);
+        g_string_append (s, ", but it was ");
+        gtk_css_change_print (change, s);
 	if ((change & ~verify_change) != 0)
-	  g_string_append_printf (s, ", unexpectedly set: 0x%x", change & ~verify_change);
+          {
+	    g_string_append (s, ", unexpectedly set: ");
+            gtk_css_change_print (change & ~verify_change, s);
+          }
 	if ((~change & verify_change) != 0)
-	  g_string_append_printf (s, ", unexpectedly no set: 0x%x",  ~change & verify_change);
+          {
+	    g_string_append_printf (s, ", unexpectedly not set: ");
+            gtk_css_change_print (~change & verify_change, s);
+          }
 	g_warning (s->str);
 	g_string_free (s, TRUE);
       }
-
-    g_ptr_array_free (tree_rules, TRUE);
   }
 #endif
 }
@@ -1695,53 +1707,53 @@ gtk_css_provider_get_style_property (GtkStyleProvider *provider,
       gtk_widget_path_iter_set_state (path, -1, state);
     }
 
-  if (!_gtk_css_matcher_init (&matcher, path))
+  if (!_gtk_css_matcher_init (&matcher, path, NULL))
     {
       gtk_widget_path_unref (path);
       return FALSE;
     }
 
   tree_rules = _gtk_css_selector_tree_match_all (priv->tree, &matcher);
-  verify_tree_match_results (css_provider, &matcher, tree_rules);
-
-  prop_name = g_strdup_printf ("-%s-%s",
-                               g_type_name (pspec->owner_type),
-                               pspec->name);
-
-  for (i = tree_rules->len - 1; i >= 0; i--)
+  if (tree_rules)
     {
-      GtkCssRuleset *ruleset = tree_rules->pdata[i];
+      verify_tree_match_results (css_provider, &matcher, tree_rules);
 
-      if (ruleset->widget_style == NULL)
-        continue;
+      prop_name = g_strdup_printf ("-%s-%s",
+                                   g_type_name (pspec->owner_type),
+                                   pspec->name);
 
-      for (val = ruleset->widget_style; val != NULL; val = val->next)
-	{
-	  if (strcmp (val->name, prop_name) == 0)
-	    {
-	      GtkCssScanner *scanner;
+      for (i = tree_rules->len - 1; i >= 0; i--)
+        {
+          GtkCssRuleset *ruleset = tree_rules->pdata[i];
 
-	      scanner = gtk_css_scanner_new (css_provider,
-					     NULL,
-					     val->section,
-					     val->section != NULL ? gtk_css_section_get_file (val->section) : NULL,
-					     val->value);
+          if (ruleset->widget_style == NULL)
+            continue;
 
-	      found = _gtk_css_style_parse_value (value,
-						  scanner->parser);
+          for (val = ruleset->widget_style; val != NULL; val = val->next)
+            {
+              if (strcmp (val->name, prop_name) == 0)
+                {
+                  GtkCssScanner *scanner;
 
-	      gtk_css_scanner_destroy (scanner);
+	          scanner = gtk_css_scanner_new (css_provider,
+                                                 NULL,
+                                                 val->section,
+                                                 val->section != NULL ? gtk_css_section_get_file (val->section) : NULL,
+                                                 val->value);
+                  found = _gtk_css_style_funcs_parse_value (value, scanner->parser);
+                  gtk_css_scanner_destroy (scanner);
+	          break;
+                }
+            }
 
-	      break;
-	    }
-	}
+          if (found)
+            break;
+        }
 
-      if (found)
-	break;
+      g_free (prop_name);
+      g_ptr_array_free (tree_rules, TRUE);
     }
 
-  g_free (prop_name);
-  g_ptr_array_free (tree_rules, TRUE);
   gtk_widget_path_unref (path);
 
   return found;
@@ -1788,38 +1800,41 @@ gtk_css_style_provider_lookup (GtkStyleProviderPrivate *provider,
   priv = css_provider->priv;
 
   tree_rules = _gtk_css_selector_tree_match_all (priv->tree, matcher);
-  verify_tree_match_results (css_provider, matcher, tree_rules);
-
-  for (i = tree_rules->len - 1; i >= 0; i--)
+  if (tree_rules)
     {
-      ruleset = tree_rules->pdata[i];
+      verify_tree_match_results (css_provider, matcher, tree_rules);
 
-      if (ruleset->styles == NULL)
-        continue;
-
-      if (!_gtk_bitmask_intersects (_gtk_css_lookup_get_missing (lookup),
-                                    ruleset->set_styles))
-        continue;
-
-      for (j = 0; j < ruleset->n_styles; j++)
+      for (i = tree_rules->len - 1; i >= 0; i--)
         {
-          GtkCssStyleProperty *prop = ruleset->styles[j].property;
-          guint id = _gtk_css_style_property_get_id (prop);
+          ruleset = tree_rules->pdata[i];
 
-          if (!_gtk_css_lookup_is_missing (lookup, id))
+          if (ruleset->styles == NULL)
             continue;
 
-          _gtk_css_lookup_set (lookup,
-                               id,
-                               ruleset->styles[j].section,
-                               ruleset->styles[j].value);
+          if (!_gtk_bitmask_intersects (_gtk_css_lookup_get_missing (lookup),
+                                        ruleset->set_styles))
+          continue;
+
+          for (j = 0; j < ruleset->n_styles; j++)
+            {
+              GtkCssStyleProperty *prop = ruleset->styles[j].property;
+              guint id = _gtk_css_style_property_get_id (prop);
+
+              if (!_gtk_css_lookup_is_missing (lookup, id))
+                continue;
+
+              _gtk_css_lookup_set (lookup,
+                                   id,
+                                   ruleset->styles[j].section,
+                                  ruleset->styles[j].value);
+            }
+
+          if (_gtk_bitmask_is_empty (_gtk_css_lookup_get_missing (lookup)))
+            break;
         }
 
-      if (_gtk_bitmask_is_empty (_gtk_css_lookup_get_missing (lookup)))
-        break;
+      g_ptr_array_free (tree_rules, TRUE);
     }
-
-  g_ptr_array_free (tree_rules, TRUE);
 
   if (change)
     {

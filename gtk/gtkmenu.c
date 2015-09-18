@@ -254,7 +254,6 @@ static void     gtk_menu_handle_scrolling  (GtkMenu          *menu,
                                             gboolean          motion);
 static void     gtk_menu_set_tearoff_hints (GtkMenu          *menu,
                                             gint             width);
-static void     gtk_menu_style_updated     (GtkWidget        *widget);
 static gboolean gtk_menu_focus             (GtkWidget        *widget,
                                             GtkDirectionType direction);
 static gint     gtk_menu_get_popup_delay   (GtkMenuShell     *menu_shell);
@@ -507,7 +506,6 @@ gtk_menu_class_init (GtkMenuClass *class)
   widget_class->show_all = gtk_menu_show_all;
   widget_class->enter_notify_event = gtk_menu_enter_notify;
   widget_class->leave_notify_event = gtk_menu_leave_notify;
-  widget_class->style_updated = gtk_menu_style_updated;
   widget_class->focus = gtk_menu_focus;
   widget_class->can_activate_accel = gtk_menu_real_can_activate_accel;
   widget_class->grab_notify = gtk_menu_grab_notify;
@@ -1196,6 +1194,18 @@ attach_widget_screen_changed (GtkWidget *attach_widget,
     menu_change_screen (menu, gtk_widget_get_screen (attach_widget));
 }
 
+static void
+menu_toplevel_attached_to (GtkWindow *toplevel, GParamSpec *pspec, GtkMenu *menu)
+{
+  GtkMenuAttachData *data;
+
+  data = g_object_get_data (G_OBJECT (menu), attach_data_key);
+
+  g_return_if_fail (data);
+
+  gtk_menu_detach (menu);
+}
+
 /**
  * gtk_menu_attach_to_widget:
  * @menu: a #GtkMenu
@@ -1252,6 +1262,8 @@ gtk_menu_attach_to_widget (GtkMenu           *menu,
 
   /* Attach the widget to the toplevel window. */
   gtk_window_set_attached_to (GTK_WINDOW (menu->priv->toplevel), attach_widget);
+  g_signal_connect (GTK_WINDOW (menu->priv->toplevel), "notify::attached-to",
+                    G_CALLBACK (menu_toplevel_attached_to), menu);
 
   _gtk_widget_update_parent_muxer (GTK_WIDGET (menu));
 
@@ -1293,10 +1305,12 @@ gtk_menu_get_attach_widget (GtkMenu *menu)
 void
 gtk_menu_detach (GtkMenu *menu)
 {
+  GtkWindow *toplevel;
   GtkMenuAttachData *data;
   GList *list;
 
   g_return_if_fail (GTK_IS_MENU (menu));
+  toplevel = GTK_WINDOW (menu->priv->toplevel);
 
   /* keep this function in sync with gtk_widget_unparent() */
   data = g_object_get_data (G_OBJECT (menu), attach_data_key);
@@ -1308,7 +1322,11 @@ gtk_menu_detach (GtkMenu *menu)
   g_object_set_data (G_OBJECT (menu), I_(attach_data_key), NULL);
 
   /* Detach the toplevel window. */
-  gtk_window_set_attached_to (GTK_WINDOW (menu->priv->toplevel), NULL);
+  g_signal_handlers_disconnect_by_func (toplevel,
+                                        (gpointer) menu_toplevel_attached_to,
+                                        menu);
+  if (gtk_window_get_attached_to (toplevel) == data->attach_widget)
+    gtk_window_set_attached_to (toplevel, NULL);
 
   g_signal_handlers_disconnect_by_func (data->attach_widget,
                                         (gpointer) attach_widget_screen_changed,
@@ -1535,20 +1553,24 @@ gtk_menu_popup_for_device (GtkMenu             *menu,
   gboolean grab_keyboard;
   GtkWidget *parent_toplevel;
   GdkDevice *keyboard, *pointer, *source_device = NULL;
+  GdkDisplay *display;
 
   g_return_if_fail (GTK_IS_MENU (menu));
   g_return_if_fail (device == NULL || GDK_IS_DEVICE (device));
 
+  display = gtk_widget_get_display (GTK_WIDGET (menu));
+
   if (device == NULL)
     device = gtk_get_current_event_device ();
 
+  if (device && gdk_device_get_display (device) != display)
+    device = NULL;
+
   if (device == NULL)
     {
-      GdkDisplay *display;
       GdkDeviceManager *device_manager;
       GList *devices;
 
-      display = gtk_widget_get_display (GTK_WIDGET (menu));
       device_manager = gdk_display_get_device_manager (display);
       devices = gdk_device_manager_list_devices (device_manager, GDK_DEVICE_TYPE_MASTER);
 
@@ -2471,25 +2493,6 @@ gtk_menu_reorder_child (GtkMenu   *menu,
 }
 
 static void
-gtk_menu_style_updated (GtkWidget *widget)
-{
-  GTK_WIDGET_CLASS (gtk_menu_parent_class)->style_updated (widget);
-
-  if (gtk_widget_get_realized (widget))
-    {
-      GtkMenu *menu = GTK_MENU (widget);
-      GtkMenuPrivate *priv = menu->priv;
-      GtkStyleContext *context;
-
-      context = gtk_widget_get_style_context (widget);
-
-      gtk_style_context_set_background (context, priv->bin_window);
-      gtk_style_context_set_background (context, priv->view_window);
-      gtk_style_context_set_background (context, gtk_widget_get_window (widget));
-    }
-}
-
-static void
 get_arrows_border (GtkMenu   *menu,
                    GtkBorder *border)
 {
@@ -2557,7 +2560,6 @@ gtk_menu_realize (GtkWidget *widget)
   GtkMenu *menu = GTK_MENU (widget);
   GtkMenuPrivate *priv = menu->priv;
   GtkAllocation allocation;
-  GtkStyleContext *context;
   GdkWindow *window;
   GdkWindowAttr attributes;
   gint attributes_mask;
@@ -2580,7 +2582,7 @@ gtk_menu_realize (GtkWidget *widget)
   attributes.wclass = GDK_INPUT_OUTPUT;
   attributes.visual = gtk_widget_get_visual (widget);
   attributes.event_mask = gtk_widget_get_events (widget);
-  attributes.event_mask |= (GDK_EXPOSURE_MASK | GDK_KEY_PRESS_MASK |
+  attributes.event_mask |= (GDK_KEY_PRESS_MASK |
                             GDK_ENTER_NOTIFY_MASK | GDK_LEAVE_NOTIFY_MASK );
 
   attributes_mask = GDK_WA_X | GDK_WA_Y | GDK_WA_VISUAL;
@@ -2592,7 +2594,6 @@ gtk_menu_realize (GtkWidget *widget)
 
   get_menu_padding (widget, &padding);
   border_width = gtk_container_get_border_width (GTK_CONTAINER (widget));
-  context = gtk_widget_get_style_context (widget);
 
   gtk_widget_get_allocation (widget, &allocation);
 
@@ -2639,10 +2640,6 @@ gtk_menu_realize (GtkWidget *widget)
 
       gtk_widget_set_parent_window (child, priv->bin_window);
     }
-
-  gtk_style_context_set_background (context, priv->bin_window);
-  gtk_style_context_set_background (context, priv->view_window);
-  gtk_style_context_set_background (context, window);
 
   if (GTK_MENU_SHELL (widget)->priv->active_menu_item)
     gtk_menu_scroll_item_visible (GTK_MENU_SHELL (widget),
@@ -2847,10 +2844,8 @@ gtk_menu_size_allocate (GtkWidget     *widget,
 
   x = border_width + padding.left;
   y = border_width + padding.top;
-  width = allocation->width - (2 * border_width) -
-    padding.left - padding.right;
-  height = allocation->height - (2 * border_width) -
-    padding.top - padding.bottom;
+  width = allocation->width - (2 * border_width) - padding.left - padding.right;
+  height = allocation->height - (2 * border_width) - padding.top - padding.bottom;
 
   if (menu_shell->priv->active)
     gtk_menu_scroll_to (menu, priv->scroll_offset);
@@ -2889,7 +2884,6 @@ gtk_menu_size_allocate (GtkWidget     *widget,
 
           if (gtk_widget_get_visible (child))
             {
-              gint i;
               gint l, r, t, b;
 
               get_effective_child_attach (child, &l, &r, &t, &b);
@@ -2926,15 +2920,14 @@ gtk_menu_size_allocate (GtkWidget     *widget,
       /* Resize the item window */
       if (gtk_widget_get_realized (widget))
         {
-          gint i;
-          gint width, height;
+          gint w, h;
 
-          height = 0;
+          h = 0;
           for (i = 0; i < gtk_menu_get_n_rows (menu); i++)
-            height += priv->heights[i];
+            h += priv->heights[i];
 
-          width = gtk_menu_get_n_columns (menu) * base_width;
-          gdk_window_resize (priv->bin_window, width, height);
+          w = gtk_menu_get_n_columns (menu) * base_width;
+          gdk_window_resize (priv->bin_window, w, h);
         }
 
       if (priv->tearoff_active)

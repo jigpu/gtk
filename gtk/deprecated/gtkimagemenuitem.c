@@ -44,7 +44,7 @@
 
 /**
  * SECTION:gtkimagemenuitem
- * @Short_description: A menu item with an icon
+ * @Short_description: A deprecated widget for a menu item with an icon
  * @Title: GtkImageMenuItem
  *
  * A GtkImageMenuItem is a menu item which has an icon next to the text label.
@@ -53,7 +53,7 @@
  *
  * |[<!-- language="C" -->
  *   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
- *   GtkWidget *icon = gtk_image_new_from_icon_name ("folder-music-symbolic, GTK_ICON_SIZE_MENU);
+ *   GtkWidget *icon = gtk_image_new_from_icon_name ("folder-music-symbolic", GTK_ICON_SIZE_MENU);
  *   GtkWidget *label = gtk_label_new ("Music");
  *   GtkWidget *menu_item = gtk_menu_item_new ();
  *
@@ -79,6 +79,35 @@
  * consider using icons in menu items only sparingly, and for "objects" (or
  * "nouns") elements only, like bookmarks, files, and links; "actions" (or
  * "verbs") should not have icons.
+ *
+ * Furthermore, if you would like to display keyboard accelerator, you must
+ * pack the accel label into the box using gtk_box_pack_end() and align the
+ * label, otherwise the accelerator will not display correctly. The following
+ * code snippet adds a keyboard accelerator to the menu item, with a key
+ * binding of Ctrl+M:
+ *
+ * |[<!-- language="C" -->
+ *   GtkWidget *box = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 6);
+ *   GtkWidget *icon = gtk_image_new_from_icon_name ("folder-music-symbolic", GTK_ICON_SIZE_MENU);
+ *   GtkWidget *label = gtk_accel_label_new ("Music");
+ *   GtkWidget *menu_item = gtk_menu_item_new ();
+ *   GtkAccelGroup *accel_group = gtk_accel_group_new ();
+ *
+ *   gtk_container_add (GTK_CONTAINER (box), icon);
+ *
+ *   gtk_label_set_use_underline (GTK_LABEL (label), TRUE);
+ *   gtk_label_set_xalign (GTK_LABEL (label), 0.0);
+ *
+ *   gtk_widget_add_accelerator (menu_item, "activate", accel_group,
+ *                               GDK_KEY_m, GDK_CONTROL_MASK, GTK_ACCEL_VISIBLE);
+ *   gtk_accel_label_set_accel_widget (GTK_ACCEL_LABEL (label), menu_item);
+ *
+ *   gtk_box_pack_end (GTK_BOX (box), label, TRUE, TRUE, 0);
+ *
+ *   gtk_container_add (GTK_CONTAINER (menu_item), box);
+ *
+ *   gtk_widget_show_all (menu_item);
+ * ]|
  */
 
 
@@ -188,7 +217,8 @@ gtk_image_menu_item_class_init (GtkImageMenuItemClass *klass)
    *
    * Child widget to appear next to the menu text.
    *
-   * Deprecated: 3.10
+   * Deprecated: 3.10: Use a #GtkMenuItem containing a #GtkBox with
+   *   a #GtkAccelLabel and a #GtkImage instead
    */
   g_object_class_install_property (gobject_class,
                                    PROP_IMAGE,
@@ -205,7 +235,7 @@ gtk_image_menu_item_class_init (GtkImageMenuItemClass *klass)
    *
    * Since: 2.16
    *
-   * Deprecated: 3.10
+   * Deprecated: 3.10: Use a named icon from the #GtkIconTheme instead
    */
   g_object_class_install_property (gobject_class,
                                    PROP_USE_STOCK,
@@ -225,7 +255,8 @@ gtk_image_menu_item_class_init (GtkImageMenuItemClass *klass)
    *
    * Since: 2.16
    *
-   * Deprecated: 3.10
+   * Deprecated: 3.10: Use a #GtkMenuItem containing a #GtkBox with
+   *   a #GtkAccelLabel and a #GtkImage instead
    */
   g_object_class_install_property (gobject_class,
                                    PROP_ALWAYS_SHOW_IMAGE,
@@ -242,7 +273,7 @@ gtk_image_menu_item_class_init (GtkImageMenuItemClass *klass)
    *
    * Since: 2.16
    *
-   * Deprecated: 3.10
+   * Deprecated: 3.10: Use gtk_widget_add_accelerator() instead 
    */
   g_object_class_install_property (gobject_class,
                                    PROP_ACCEL_GROUP,
@@ -700,22 +731,35 @@ gtk_image_menu_item_activatable_interface_init (GtkActivatableIface  *iface)
   iface->sync_action_properties = gtk_image_menu_item_sync_action_properties;
 }
 
+static GtkWidget *
+gtk_image_menu_item_ensure_image (GtkImageMenuItem *item)
+{
+  GtkWidget *image;
+
+  image = gtk_image_menu_item_get_image (item);
+  if (!GTK_IS_IMAGE (image))
+    {
+      image = gtk_image_new ();
+      gtk_widget_show (image);
+      gtk_image_menu_item_set_image (item, image);
+    }
+
+  return image;
+}
+
 static gboolean
 activatable_update_stock_id (GtkImageMenuItem *image_menu_item, GtkAction *action)
 {
-  GtkWidget   *image;
   const gchar *stock_id  = gtk_action_get_stock_id (action);
-
-  image = gtk_image_menu_item_get_image (image_menu_item);
 
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
 
-  if (GTK_IS_IMAGE (image) &&
-      stock_id && gtk_icon_factory_lookup_default (stock_id))
+  if (stock_id && gtk_icon_factory_lookup_default (stock_id))
     {
-      G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+      GtkWidget *image;
+
+      image = gtk_image_menu_item_ensure_image (image_menu_item);
       gtk_image_set_from_stock (GTK_IMAGE (image), stock_id, GTK_ICON_SIZE_MENU);
-      G_GNUC_END_IGNORE_DEPRECATIONS;
       return TRUE;
     }
 
@@ -727,7 +771,6 @@ activatable_update_stock_id (GtkImageMenuItem *image_menu_item, GtkAction *actio
 static gboolean
 activatable_update_gicon (GtkImageMenuItem *image_menu_item, GtkAction *action)
 {
-  GtkWidget   *image;
   GIcon       *icon = gtk_action_get_gicon (action);
   const gchar *stock_id;
   gboolean     ret = FALSE;
@@ -736,11 +779,11 @@ activatable_update_gicon (GtkImageMenuItem *image_menu_item, GtkAction *action)
 
   G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
 
-  image = gtk_image_menu_item_get_image (image_menu_item);
-
-  if (icon && GTK_IS_IMAGE (image) &&
-      !(stock_id && gtk_icon_factory_lookup_default (stock_id)))
+  if (icon && !(stock_id && gtk_icon_factory_lookup_default (stock_id)))
     {
+      GtkWidget *image;
+
+      image = gtk_image_menu_item_ensure_image (image_menu_item);
       gtk_image_set_from_gicon (GTK_IMAGE (image), icon, GTK_ICON_SIZE_MENU);
       ret = TRUE;
     }
@@ -750,20 +793,21 @@ activatable_update_gicon (GtkImageMenuItem *image_menu_item, GtkAction *action)
   return ret;
 }
 
-static void
+static gboolean
 activatable_update_icon_name (GtkImageMenuItem *image_menu_item, GtkAction *action)
 {
-  GtkWidget   *image;
   const gchar *icon_name = gtk_action_get_icon_name (action);
 
-  image = gtk_image_menu_item_get_image (image_menu_item);
-
-  if (GTK_IS_IMAGE (image) &&
-      (gtk_image_get_storage_type (GTK_IMAGE (image)) == GTK_IMAGE_EMPTY ||
-       gtk_image_get_storage_type (GTK_IMAGE (image)) == GTK_IMAGE_ICON_NAME))
+  if (icon_name)
     {
+      GtkWidget *image;
+
+      image = gtk_image_menu_item_ensure_image (image_menu_item);
       gtk_image_set_from_icon_name (GTK_IMAGE (image), icon_name, GTK_ICON_SIZE_MENU);
+      return TRUE;
     }
+
+  return FALSE;
 }
 
 static void
@@ -795,7 +839,6 @@ gtk_image_menu_item_sync_action_properties (GtkActivatable *activatable,
                                             GtkAction      *action)
 {
   GtkImageMenuItem *image_menu_item;
-  GtkWidget *image;
   gboolean   use_appearance;
 
   image_menu_item = GTK_IMAGE_MENU_ITEM (activatable);
@@ -808,21 +851,6 @@ gtk_image_menu_item_sync_action_properties (GtkActivatable *activatable,
   use_appearance = gtk_activatable_get_use_action_appearance (activatable);
   if (!use_appearance)
     return;
-
-  image = gtk_image_menu_item_get_image (image_menu_item);
-  if (image && !GTK_IS_IMAGE (image))
-    {
-      gtk_image_menu_item_set_image (image_menu_item, NULL);
-      image = NULL;
-    }
-
-  if (!image)
-    {
-      image = gtk_image_new ();
-      gtk_widget_show (image);
-      gtk_image_menu_item_set_image (GTK_IMAGE_MENU_ITEM (activatable),
-                                     image);
-    }
 
   if (!activatable_update_stock_id (image_menu_item, action) &&
       !activatable_update_gicon (image_menu_item, action))
@@ -906,7 +934,7 @@ gtk_image_menu_item_new_with_mnemonic (const gchar *label)
  *
  * Returns: a new #GtkImageMenuItem.
  *
- * Deprecated: 3.10: Use gtk_menu_item_new() instead.
+ * Deprecated: 3.10: Use gtk_menu_item_new_with_mnemonic() instead.
  */
 GtkWidget*
 gtk_image_menu_item_new_from_stock (const gchar   *stock_id,

@@ -23,6 +23,7 @@
 #include "gtkcssnumbervalueprivate.h"
 #include "gtkcssstringvalueprivate.h"
 #include "gtkcssstylepropertyprivate.h"
+#include "gtksettingsprivate.h"
 #include "gtkstyleproviderprivate.h"
 
 struct _GtkCssValue {
@@ -40,22 +41,31 @@ static GtkCssValue *
 gtk_css_value_initial_compute (GtkCssValue             *value,
                                guint                    property_id,
                                GtkStyleProviderPrivate *provider,
-			       int                      scale,
-                               GtkCssComputedValues    *values,
-                               GtkCssComputedValues    *parent_values,
-                               GtkCssDependencies      *dependencies)
+                               GtkCssStyle             *style,
+                               GtkCssStyle             *parent_style)
 {
   GtkSettings *settings;
 
   switch (property_id)
     {
+    case GTK_CSS_PROPERTY_DPI:
+      settings = _gtk_style_provider_private_get_settings (provider);
+      if (settings)
+        {
+          GdkScreen *screen = _gtk_settings_get_screen (settings);
+          double resolution = gdk_screen_get_resolution (screen);
+
+          if (resolution > 0.0)
+            return _gtk_css_number_value_new (resolution, GTK_CSS_NUMBER);
+        }
+      break;
+
     case GTK_CSS_PROPERTY_FONT_FAMILY:
       settings = _gtk_style_provider_private_get_settings (provider);
       if (settings)
         {
           PangoFontDescription *description;
           char *font_name;
-          GtkCssValue *value;
 
           g_object_get (settings, "gtk-font-name", &font_name, NULL);
           description = pango_font_description_from_string (font_name);
@@ -65,9 +75,12 @@ gtk_css_value_initial_compute (GtkCssValue             *value,
 
           if (pango_font_description_get_set_fields (description) & PANGO_FONT_MASK_FAMILY)
             {
-              value = _gtk_css_array_value_new (_gtk_css_string_value_new (pango_font_description_get_family (description)));
+              GtkCssValue *val;
+
+              val = _gtk_css_array_value_new (_gtk_css_string_value_new (pango_font_description_get_family (description)));
               pango_font_description_free (description);
-              return value;
+
+              return val;
             }
  
           pango_font_description_free (description);
@@ -81,10 +94,8 @@ gtk_css_value_initial_compute (GtkCssValue             *value,
   return _gtk_css_value_compute (_gtk_css_style_property_get_initial_value (_gtk_css_style_property_lookup_by_id (property_id)),
                                  property_id,
                                  provider,
-				 scale,
-                                 values,
-                                 parent_values,
-                                 dependencies);
+                                 style,
+                                 parent_style);
 }
 
 static gboolean

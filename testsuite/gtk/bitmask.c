@@ -280,11 +280,101 @@ test_intersect_hardcoded (void)
     }
 }
 
+static void
+test_subtract_hardcoded (void)
+{
+  GtkBitmask *left, *right, *subtracted, *expected;
+  const char *left_str, *right_str;
+  guint left_len, right_len;
+  guint i, l, r;
+
+  for (l = 0; l < G_N_ELEMENTS (tests); l++)
+    {
+      for (r = 0; r < G_N_ELEMENTS (tests); r++)
+        {
+          left = masks[l];
+          right = masks[r];
+          left_str = tests[l];
+          right_str = tests[r];
+          left_len = strlen (tests[l]);
+          right_len = strlen (tests[r]);
+
+          expected = _gtk_bitmask_new ();
+          for (i = MIN (right_len, left_len); i < left_len; i++)
+            {
+              expected = _gtk_bitmask_set (expected, i, left_str[left_len - i - 1] == '1');
+            }
+          if (left_len > right_len)
+            left_str += left_len - right_len;
+          if (right_len > left_len)
+            right_str += right_len - left_len;
+          i = MIN (right_len, left_len);
+          while (i--)
+            {
+              expected = _gtk_bitmask_set (expected, i, left_str[0] == '1' && right_str[0] == '0');
+              right_str++;
+              left_str++;
+            }
+
+          g_test_message ("%s - %s\n", _gtk_bitmask_to_string (left), _gtk_bitmask_to_string (right));
+          subtracted = _gtk_bitmask_subtract (_gtk_bitmask_copy (left), right);
+
+          assert_cmpmasks (subtracted, expected);
+
+          _gtk_bitmask_free (subtracted);
+          _gtk_bitmask_free (expected);
+        }
+    }
+}
+
 #define SWAP(_a, _b) G_STMT_START{ \
   guint _tmp = _a; \
   _a = _b; \
   _b = _tmp; \
 }G_STMT_END
+
+static void
+test_invert_range_hardcoded (void)
+{
+  guint t, l, r, i;
+  gsize r_len, l_len, ref_len;
+  char *ref_str;
+  GtkBitmask *bitmask, *ref;
+
+  for (t = 0; t < G_N_ELEMENTS (tests); t++)
+    {
+      for (l = 0; l < G_N_ELEMENTS (tests); l++)
+        {
+          l_len = strlen (tests[l]);
+
+          for (r = 0; r < G_N_ELEMENTS (tests); r++)
+            {
+              r_len = strlen (tests[r]);
+              if (r_len < l_len)
+                continue;
+              
+              ref_len = MAX (r_len, strlen (tests[t]));
+              ref_str = g_strdup_printf ("%*s", (int) ref_len, tests[t]);
+              for (i = 0; i < ref_len && ref_str[i] == ' '; i++)
+                ref_str[i] = '0';
+              for (i = l_len - 1; i < r_len; i++)
+                {
+                  ref_str[ref_len-i-1] = ref_str[ref_len-i-1] == '0' ? '1' : '0';
+                }
+              ref = gtk_bitmask_new_parse (ref_str);
+              g_free (ref_str);
+
+              bitmask = gtk_bitmask_new_parse (tests[t]);
+              bitmask = _gtk_bitmask_invert_range (bitmask, l_len - 1, r_len);
+
+              assert_cmpmasks (bitmask, ref);
+
+              _gtk_bitmask_free (bitmask);
+              _gtk_bitmask_free (ref);
+            }
+        }
+    }
+}
 
 static void
 test_invert_range (void)
@@ -375,7 +465,9 @@ main (int argc, char *argv[])
   g_test_add_func ("/bitmask/union", test_union);
   g_test_add_func ("/bitmask/intersect", test_intersect);
   g_test_add_func ("/bitmask/intersect_hardcoded", test_intersect_hardcoded);
+  g_test_add_func ("/bitmask/subtract_hardcoded", test_subtract_hardcoded);
   g_test_add_func ("/bitmask/invert_range", test_invert_range);
+  g_test_add_func ("/bitmask/invert_range_hardcoded", test_invert_range_hardcoded);
 
   result = g_test_run ();
 

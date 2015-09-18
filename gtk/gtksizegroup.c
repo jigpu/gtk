@@ -20,6 +20,7 @@
 #include <string.h>
 
 #include "gtkbuildable.h"
+#include "gtkbuilderprivate.h"
 #include "gtkcontainer.h"
 #include "gtkintl.h"
 #include "gtktypebuiltins.h"
@@ -211,9 +212,9 @@ real_queue_resize (GtkWidget          *widget,
   _gtk_widget_set_alloc_needed (widget, TRUE);
   _gtk_size_request_cache_clear (_gtk_widget_peek_request_cache (widget));
 
-  container = gtk_widget_get_parent (widget);
+  container = _gtk_widget_get_parent (widget);
   if (!container &&
-      gtk_widget_is_toplevel (widget) && GTK_IS_CONTAINER (widget))
+      _gtk_widget_is_toplevel (widget) && GTK_IS_CONTAINER (widget))
     container = widget;
 
   if (container)
@@ -242,7 +243,7 @@ queue_resize_on_widget (GtkWidget          *widget,
       if (widget == parent && !check_siblings)
 	{
 	  real_queue_resize (widget, flags);
-          parent = gtk_widget_get_parent (parent);
+          parent = _gtk_widget_get_parent (parent);
 	  continue;
 	}
       
@@ -252,7 +253,7 @@ queue_resize_on_widget (GtkWidget          *widget,
 	  if (widget == parent)
 	    real_queue_resize (widget, flags);
 
-          parent = gtk_widget_get_parent (parent);
+          parent = _gtk_widget_get_parent (parent);
 	  continue;
 	}
 
@@ -296,7 +297,7 @@ queue_resize_on_widget (GtkWidget          *widget,
       
       g_hash_table_destroy (widgets);
 
-      parent = gtk_widget_get_parent (parent);
+      parent = _gtk_widget_get_parent (parent);
     }
 }
 
@@ -643,37 +644,72 @@ _gtk_size_group_queue_resize (GtkWidget           *widget,
 }
 
 typedef struct {
+  gchar *name;
+  gint line;
+  gint col;
+} ItemData;
+
+static void
+item_data_free (gpointer data)
+{
+  ItemData *item_data = data;
+
+  g_free (item_data->name);
+  g_free (item_data);
+}
+
+typedef struct {
   GObject *object;
+  GtkBuilder *builder;
   GSList *items;
 } GSListSubParserData;
 
 static void
-size_group_start_element (GMarkupParseContext *context,
-			  const gchar         *element_name,
-			  const gchar        **names,
-			  const gchar        **values,
-			  gpointer            user_data,
-			  GError            **error)
+size_group_start_element (GMarkupParseContext  *context,
+                          const gchar          *element_name,
+                          const gchar         **names,
+                          const gchar         **values,
+                          gpointer              user_data,
+                          GError              **error)
 {
-  guint i;
   GSListSubParserData *data = (GSListSubParserData*)user_data;
 
   if (strcmp (element_name, "widget") == 0)
     {
-      for (i = 0; names[i]; i++)
+      const gchar *name;
+      ItemData *item_data;
+
+      if (!_gtk_builder_check_parent (data->builder, context, "widgets", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_STRING, "name", &name,
+                                        G_MARKUP_COLLECT_INVALID))
         {
-          if (strcmp (names[i], "name") == 0)
-            data->items = g_slist_prepend (data->items, g_strdup (values[i]));
+          _gtk_builder_prefix_error (data->builder, context, error);
+          return;
         }
+
+      item_data = g_new (ItemData, 1);
+      item_data->name = g_strdup (name);
+      g_markup_parse_context_get_position (context, &item_data->line, &item_data->col);
+      data->items = g_slist_prepend (data->items, item_data);
     }
   else if (strcmp (element_name, "widgets") == 0)
     {
-      return;
+      if (!_gtk_builder_check_parent (data->builder, context, "object", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_INVALID, NULL, NULL,
+                                        G_MARKUP_COLLECT_INVALID))
+        _gtk_builder_prefix_error (data->builder, context, error);
     }
   else
     {
-      g_warning ("Unsupported type tag for GtkSizeGroup: %s\n",
-                 element_name);
+      _gtk_builder_error_unhandled_tag (data->builder, context,
+                                        "GtkSizeGroup", element_name,
+                                        error);
     }
 }
 
@@ -684,25 +720,27 @@ static const GMarkupParser size_group_parser =
 
 static gboolean
 gtk_size_group_buildable_custom_tag_start (GtkBuildable  *buildable,
-					   GtkBuilder    *builder,
-					   GObject       *child,
-					   const gchar   *tagname,
-					   GMarkupParser *parser,
-					   gpointer      *data)
+                                           GtkBuilder    *builder,
+                                           GObject       *child,
+                                           const gchar   *tagname,
+                                           GMarkupParser *parser,
+                                           gpointer      *parser_data)
 {
-  GSListSubParserData *parser_data;
+  GSListSubParserData *data;
 
   if (child)
     return FALSE;
 
   if (strcmp (tagname, "widgets") == 0)
     {
-      parser_data = g_slice_new0 (GSListSubParserData);
-      parser_data->items = NULL;
-      parser_data->object = G_OBJECT (buildable);
+      data = g_slice_new0 (GSListSubParserData);
+      data->items = NULL;
+      data->object = G_OBJECT (buildable);
+      data->builder = builder;
 
       *parser = size_group_parser;
-      *data = parser_data;
+      *parser_data = data;
+
       return TRUE;
     }
 
@@ -711,35 +749,29 @@ gtk_size_group_buildable_custom_tag_start (GtkBuildable  *buildable,
 
 static void
 gtk_size_group_buildable_custom_finished (GtkBuildable  *buildable,
-					  GtkBuilder    *builder,
-					  GObject       *child,
-					  const gchar   *tagname,
-					  gpointer       user_data)
+                                          GtkBuilder    *builder,
+                                          GObject       *child,
+                                          const gchar   *tagname,
+                                          gpointer       user_data)
 {
   GSList *l;
   GSListSubParserData *data;
   GObject *object;
 
-  if (strcmp (tagname, "widgets"))
+  if (strcmp (tagname, "widgets") != 0)
     return;
-  
+
   data = (GSListSubParserData*)user_data;
   data->items = g_slist_reverse (data->items);
 
   for (l = data->items; l; l = l->next)
     {
-      object = gtk_builder_get_object (builder, l->data);
+      ItemData *item_data = l->data;
+      object = _gtk_builder_lookup_object (builder, item_data->name, item_data->line, item_data->col);
       if (!object)
-	{
-	  g_warning ("Unknown object %s specified in sizegroup %s",
-		     (const gchar*)l->data,
-		     gtk_buildable_get_name (GTK_BUILDABLE (data->object)));
-	  continue;
-	}
-      gtk_size_group_add_widget (GTK_SIZE_GROUP (data->object),
-				 GTK_WIDGET (object));
-      g_free (l->data);
+        continue;
+      gtk_size_group_add_widget (GTK_SIZE_GROUP (data->object), GTK_WIDGET (object));
     }
-  g_slist_free (data->items);
+  g_slist_free_full (data->items, item_data_free);
   g_slice_free (GSListSubParserData, data);
 }

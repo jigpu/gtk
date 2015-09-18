@@ -75,6 +75,7 @@
 
 #define GTK_TEXT_USE_INTERNAL_UNSUPPORTED_API
 #include "config.h"
+#include "gtktextattributesprivate.h"
 #include "gtktextdisplay.h"
 #include "gtkwidgetprivate.h"
 #include "gtkstylecontextprivate.h"
@@ -106,12 +107,9 @@ struct _GtkTextRenderer
 
   GtkWidget *widget;
   cairo_t *cr;
-  
+
   GdkRGBA *error_color;	/* Error underline color for this widget */
   GList *widgets;      	/* widgets encountered when drawing */
-
-  GdkRGBA rgba[4];
-  guint8  rgba_set[4];
 
   guint state : 2;
 };
@@ -131,17 +129,23 @@ text_renderer_set_rgba (GtkTextRenderer *text_renderer,
 			const GdkRGBA   *rgba)
 {
   PangoRenderer *renderer = PANGO_RENDERER (text_renderer);
-  PangoColor     dummy = { 0, };
+  PangoColor color = { 0, };
+  guint16 alpha;
 
   if (rgba)
     {
-      text_renderer->rgba[part] = *rgba;
-      pango_renderer_set_color (renderer, part, &dummy);
+      color.red = (guint16)(rgba->red * 65535);
+      color.green = (guint16)(rgba->green * 65535);
+      color.blue = (guint16)(rgba->blue * 65535);
+      alpha = (guint16)(rgba->alpha * 65535);
+      pango_renderer_set_color (renderer, part, &color);
+      pango_renderer_set_alpha (renderer, part, alpha);
     }
   else
-    pango_renderer_set_color (renderer, part, NULL);
-
-  text_renderer->rgba_set[part] = (rgba != NULL);
+    {
+      pango_renderer_set_color (renderer, part, NULL);
+      pango_renderer_set_alpha (renderer, part, 0);
+    }
 }
 
 static GtkTextAppearance *
@@ -204,9 +208,25 @@ gtk_text_renderer_prepare_run (PangoRenderer  *renderer,
     fg_rgba = appearance->rgba[1];
 
   text_renderer_set_rgba (text_renderer, PANGO_RENDER_PART_FOREGROUND, fg_rgba);
-  text_renderer_set_rgba (text_renderer, PANGO_RENDER_PART_STRIKETHROUGH, fg_rgba);
 
-  if (appearance->underline == PANGO_UNDERLINE_ERROR)
+  if (GTK_TEXT_APPEARANCE_GET_STRIKETHROUGH_RGBA_SET (appearance))
+    {
+      GdkRGBA rgba;
+
+      GTK_TEXT_APPEARANCE_GET_STRIKETHROUGH_RGBA (appearance, &rgba);
+      text_renderer_set_rgba (text_renderer, PANGO_RENDER_PART_STRIKETHROUGH, &rgba);
+    }
+  else
+    text_renderer_set_rgba (text_renderer, PANGO_RENDER_PART_STRIKETHROUGH, fg_rgba);
+
+  if (GTK_TEXT_APPEARANCE_GET_UNDERLINE_RGBA_SET (appearance))
+    {
+      GdkRGBA rgba;
+
+      GTK_TEXT_APPEARANCE_GET_UNDERLINE_RGBA (appearance, &rgba);
+      text_renderer_set_rgba (text_renderer, PANGO_RENDER_PART_UNDERLINE, &rgba);
+    }
+  else if (appearance->underline == PANGO_UNDERLINE_ERROR)
     {
       if (!text_renderer->error_color)
         {
@@ -250,10 +270,22 @@ static void
 set_color (GtkTextRenderer *text_renderer,
            PangoRenderPart  part)
 {
+  PangoColor *color;
+  GdkRGBA rgba;
+  guint16 alpha;
+
   cairo_save (text_renderer->cr);
 
-  if (text_renderer->rgba_set[part])
-    gdk_cairo_set_source_rgba (text_renderer->cr, &text_renderer->rgba[part]);
+  color = pango_renderer_get_color (PANGO_RENDERER (text_renderer), part);
+  alpha = pango_renderer_get_alpha (PANGO_RENDERER (text_renderer), part);
+  if (color)
+    {
+      rgba.red = color->red / 65535.;
+      rgba.green = color->green / 65535.;
+      rgba.blue = color->blue / 65535.;
+      rgba.alpha = alpha / 65535.;
+      gdk_cairo_set_source_rgba (text_renderer->cr, &rgba);
+    }
 }
 
 static void

@@ -19,6 +19,7 @@
 
 #include "gtkdebug.h"
 #include "gtkpixelcacheprivate.h"
+#include "gtkstylecontextprivate.h"
 
 #define BLOW_CACHE_TIMEOUT_SEC 20
 
@@ -28,8 +29,8 @@
 
 /* When resizing viewport we allow this extra
    size to avoid constantly reallocating when resizing */
-#define ALLOW_SMALLER_SIZE 32
-#define ALLOW_LARGER_SIZE 32
+#define ALLOW_SMALLER_SIZE_FACTOR 0.5
+#define ALLOW_LARGER_SIZE_FACTOR  1.25
 
 struct _GtkPixelCache {
   cairo_surface_t *surface;
@@ -45,10 +46,15 @@ struct _GtkPixelCache {
   /* may be null if not dirty */
   cairo_region_t *surface_dirty;
 
+  /* background tracking for rgb/rgba */
+  GtkStyleContext *style_context;
+
   guint timeout_tag;
 
   guint extra_width;
   guint extra_height;
+
+  guint always_cache : 1;
 };
 
 GtkPixelCache *
@@ -85,6 +91,8 @@ _gtk_pixel_cache_free (GtkPixelCache *cache)
 
   if (cache->surface_dirty != NULL)
     cairo_region_destroy (cache->surface_dirty);
+
+  g_clear_object (&cache->style_context);
 
   g_free (cache);
 }
@@ -179,11 +187,9 @@ _gtk_pixel_cache_create_surface_if_needed (GtkPixelCache         *cache,
   cairo_rectangle_int_t rect;
   int surface_w, surface_h;
   cairo_content_t content;
-  cairo_pattern_t *bg;
-  double red, green, blue, alpha;
 
 #ifdef G_ENABLE_DEBUG
-  if (gtk_get_debug_flags () & GTK_DEBUG_NO_PIXEL_CACHE)
+  if (GTK_DEBUG_CHECK (NO_PIXEL_CACHE))
     return;
 #endif
 
@@ -191,11 +197,8 @@ _gtk_pixel_cache_create_surface_if_needed (GtkPixelCache         *cache,
   if (!content)
     {
       content = CAIRO_CONTENT_COLOR_ALPHA;
-      bg = gdk_window_get_background_pattern (window);
-      if (bg != NULL &&
-          cairo_pattern_get_type (bg) == CAIRO_PATTERN_TYPE_SOLID &&
-          cairo_pattern_get_rgba (bg, &red, &green, &blue, &alpha) == CAIRO_STATUS_SUCCESS &&
-          alpha == 1.0)
+      if (cache->style_context &&
+          _gtk_style_context_is_background_opaque (cache->style_context))
         content = CAIRO_CONTENT_COLOR;
     }
 
@@ -210,10 +213,10 @@ _gtk_pixel_cache_create_surface_if_needed (GtkPixelCache         *cache,
   /* If current surface can't fit view_rect or is too large, kill it */
   if (cache->surface != NULL &&
       (cairo_surface_get_content (cache->surface) != content ||
-       cache->surface_w < MAX(view_rect->width, surface_w - ALLOW_SMALLER_SIZE) ||
-       cache->surface_w > surface_w + ALLOW_LARGER_SIZE ||
-       cache->surface_h < MAX(view_rect->height, surface_h - ALLOW_SMALLER_SIZE) ||
-       cache->surface_h > surface_h + ALLOW_LARGER_SIZE ||
+       cache->surface_w < MAX(view_rect->width, surface_w * ALLOW_SMALLER_SIZE_FACTOR) ||
+       cache->surface_w > surface_w * ALLOW_LARGER_SIZE_FACTOR ||
+       cache->surface_h < MAX(view_rect->height, surface_h * ALLOW_SMALLER_SIZE_FACTOR) ||
+       cache->surface_h > surface_h * ALLOW_LARGER_SIZE_FACTOR ||
        cache->surface_scale != gdk_window_get_scale_factor (window)))
     {
       cairo_surface_destroy (cache->surface);
@@ -224,10 +227,12 @@ _gtk_pixel_cache_create_surface_if_needed (GtkPixelCache         *cache,
     }
 
   /* Don't allocate a surface if view >= canvas, as we won't
-     be scrolling then anyway */
+   * be scrolling then anyway, unless the widget requested it.
+   */
   if (cache->surface == NULL &&
-      (view_rect->width < canvas_rect->width ||
-       view_rect->height < canvas_rect->height))
+      (cache->always_cache ||
+       (view_rect->width < canvas_rect->width ||
+        view_rect->height < canvas_rect->height)))
     {
       cache->surface_x = -canvas_rect->x;
       cache->surface_y = -canvas_rect->y;
@@ -359,7 +364,7 @@ _gtk_pixel_cache_repaint (GtkPixelCache         *cache,
       cairo_restore (backing_cr);
 
 #ifdef G_ENABLE_DEBUG
-      if (gtk_get_debug_flags () & GTK_DEBUG_PIXEL_CACHE)
+      if (GTK_DEBUG_CHECK (PIXEL_CACHE))
         {
           GdkRGBA colors[] = {
             { 1, 0, 0, 0.08},
@@ -482,4 +487,25 @@ void
 _gtk_pixel_cache_unmap (GtkPixelCache *cache)
 {
   gtk_pixel_cache_blow_cache (cache);
+}
+
+gboolean
+_gtk_pixel_cache_get_always_cache (GtkPixelCache *cache)
+{
+  return cache->always_cache;
+}
+
+void
+_gtk_pixel_cache_set_always_cache (GtkPixelCache *cache,
+                                   gboolean       always_cache)
+{
+  cache->always_cache = !!always_cache;
+}
+
+void
+_gtk_pixel_cache_set_style_context (GtkPixelCache   *cache,
+                                    GtkStyleContext *style_context)
+{
+  if (g_set_object (&cache->style_context, style_context))
+    _gtk_pixel_cache_invalidate (cache, NULL);
 }

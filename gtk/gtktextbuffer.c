@@ -117,7 +117,8 @@ enum {
   PROP_HAS_SELECTION,
   PROP_CURSOR_POSITION,
   PROP_COPY_TARGET_LIST,
-  PROP_PASTE_TARGET_LIST
+  PROP_PASTE_TARGET_LIST,
+  LAST_PROP
 };
 
 static void gtk_text_buffer_finalize   (GObject            *object);
@@ -170,6 +171,7 @@ static void gtk_text_buffer_notify       (GObject         *object,
                                           GParamSpec      *pspec);
 
 static guint signals[LAST_SIGNAL] = { 0 };
+static GParamSpec *text_buffer_props[LAST_PROP];
 
 G_DEFINE_TYPE_WITH_PRIVATE (GtkTextBuffer, gtk_text_buffer, G_TYPE_OBJECT)
 
@@ -193,16 +195,15 @@ gtk_text_buffer_class_init (GtkTextBufferClass *klass)
   klass->mark_set = gtk_text_buffer_real_mark_set;
 
   /* Construct */
-  g_object_class_install_property (object_class,
-                                   PROP_TAG_TABLE,
-                                   g_param_spec_object ("tag-table",
-                                                        P_("Tag Table"),
-                                                        P_("Text Tag Table"),
-                                                        GTK_TYPE_TEXT_TAG_TABLE,
-                                                        GTK_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY));
+  text_buffer_props[PROP_TAG_TABLE] =
+      g_param_spec_object ("tag-table",
+                           P_("Tag Table"),
+                           P_("Text Tag Table"),
+                           GTK_TYPE_TEXT_TAG_TABLE,
+                           GTK_PARAM_READWRITE | G_PARAM_CONSTRUCT_ONLY);
 
-  /* Normal properties*/
-  
+  /* Normal properties */
+
   /**
    * GtkTextBuffer:text:
    *
@@ -211,13 +212,12 @@ gtk_text_buffer_class_init (GtkTextBufferClass *klass)
    *
    * Since: 2.8
    */
-  g_object_class_install_property (object_class,
-                                   PROP_TEXT,
-                                   g_param_spec_string ("text",
-                                                        P_("Text"),
-                                                        P_("Current text of the buffer"),
-							"",
-                                                        GTK_PARAM_READWRITE));
+  text_buffer_props[PROP_TEXT] =
+      g_param_spec_string ("text",
+                           P_("Text"),
+                           P_("Current text of the buffer"),
+                           "",
+                           GTK_PARAM_READWRITE);
 
   /**
    * GtkTextBuffer:has-selection:
@@ -226,30 +226,29 @@ gtk_text_buffer_class_init (GtkTextBufferClass *klass)
    *
    * Since: 2.10
    */
-  g_object_class_install_property (object_class,
-                                   PROP_HAS_SELECTION,
-                                   g_param_spec_boolean ("has-selection",
-                                                         P_("Has selection"),
-                                                         P_("Whether the buffer has some text currently selected"),
-                                                         FALSE,
-                                                         GTK_PARAM_READABLE));
+  text_buffer_props[PROP_HAS_SELECTION] =
+      g_param_spec_boolean ("has-selection",
+                            P_("Has selection"),
+                            P_("Whether the buffer has some text currently selected"),
+                            FALSE,
+                            GTK_PARAM_READABLE);
 
   /**
    * GtkTextBuffer:cursor-position:
    *
-   * The position of the insert mark (as offset from the beginning 
-   * of the buffer). It is useful for getting notified when the 
+   * The position of the insert mark (as offset from the beginning
+   * of the buffer). It is useful for getting notified when the
    * cursor moves.
    *
    * Since: 2.10
    */
-  g_object_class_install_property (object_class,
-                                   PROP_CURSOR_POSITION,
-                                   g_param_spec_int ("cursor-position",
-                                                     P_("Cursor position"),
-                                                     P_("The position of the insert mark (as offset from the beginning of the buffer)"),
-						     0, G_MAXINT, 0,
-                                                     GTK_PARAM_READABLE));
+  text_buffer_props[PROP_CURSOR_POSITION] =
+      g_param_spec_int ("cursor-position",
+                        P_("Cursor position"),
+                        P_("The position of the insert mark (as offset from the beginning of the buffer)"),
+			0, G_MAXINT,
+                        0,
+                        GTK_PARAM_READABLE);
 
   /**
    * GtkTextBuffer:copy-target-list:
@@ -259,13 +258,12 @@ gtk_text_buffer_class_init (GtkTextBufferClass *klass)
    *
    * Since: 2.10
    */
-  g_object_class_install_property (object_class,
-                                   PROP_COPY_TARGET_LIST,
-                                   g_param_spec_boxed ("copy-target-list",
-                                                       P_("Copy target list"),
-                                                       P_("The list of targets this buffer supports for clipboard copying and DND source"),
-                                                       GTK_TYPE_TARGET_LIST,
-                                                       GTK_PARAM_READABLE));
+  text_buffer_props[PROP_COPY_TARGET_LIST] =
+      g_param_spec_boxed ("copy-target-list",
+                          P_("Copy target list"),
+                          P_("The list of targets this buffer supports for clipboard copying and DND source"),
+                          GTK_TYPE_TARGET_LIST,
+                          GTK_PARAM_READABLE);
 
   /**
    * GtkTextBuffer:paste-target-list:
@@ -275,13 +273,14 @@ gtk_text_buffer_class_init (GtkTextBufferClass *klass)
    *
    * Since: 2.10
    */
-  g_object_class_install_property (object_class,
-                                   PROP_PASTE_TARGET_LIST,
-                                   g_param_spec_boxed ("paste-target-list",
-                                                       P_("Paste target list"),
-                                                       P_("The list of targets this buffer supports for clipboard pasting and DND destination"),
-                                                       GTK_TYPE_TARGET_LIST,
-                                                       GTK_PARAM_READABLE));
+  text_buffer_props[PROP_PASTE_TARGET_LIST] =
+      g_param_spec_boxed ("paste-target-list",
+                          P_("Paste target list"),
+                          P_("The list of targets this buffer supports for clipboard pasting and DND destination"),
+                          GTK_TYPE_TARGET_LIST,
+                          GTK_PARAM_READABLE);
+
+  g_object_class_install_properties (object_class, LAST_PROP, text_buffer_props);
 
   /**
    * GtkTextBuffer::insert-text:
@@ -895,7 +894,7 @@ gtk_text_buffer_real_insert_text (GtkTextBuffer *buffer,
   _gtk_text_btree_insert (iter, text, len);
 
   g_signal_emit (buffer, signals[CHANGED], 0);
-  g_object_notify (G_OBJECT (buffer), "cursor-position");
+  g_object_notify_by_pspec (G_OBJECT (buffer), text_buffer_props[PROP_CURSOR_POSITION]);
 }
 
 static void
@@ -1616,11 +1615,11 @@ gtk_text_buffer_real_delete_range (GtkTextBuffer *buffer,
   if (has_selection != buffer->priv->has_selection)
     {
       buffer->priv->has_selection = has_selection;
-      g_object_notify (G_OBJECT (buffer), "has-selection");
+      g_object_notify_by_pspec (G_OBJECT (buffer), text_buffer_props[PROP_HAS_SELECTION]);
     }
 
   g_signal_emit (buffer, signals[CHANGED], 0);
-  g_object_notify (G_OBJECT (buffer), "cursor-position");
+  g_object_notify_by_pspec (G_OBJECT (buffer), text_buffer_props[PROP_CURSOR_POSITION]);
 }
 
 static void
@@ -2541,7 +2540,7 @@ gtk_text_buffer_real_changed (GtkTextBuffer *buffer)
 {
   gtk_text_buffer_set_modified (buffer, TRUE);
 
-  g_object_notify (G_OBJECT (buffer), "text");
+  g_object_notify_by_pspec (G_OBJECT (buffer), text_buffer_props[PROP_TEXT]);
 }
 
 static void
@@ -2566,12 +2565,12 @@ gtk_text_buffer_real_mark_set (GtkTextBuffer     *buffer,
       if (has_selection != buffer->priv->has_selection)
         {
           buffer->priv->has_selection = has_selection;
-          g_object_notify (G_OBJECT (buffer), "has-selection");
+          g_object_notify_by_pspec (G_OBJECT (buffer), text_buffer_props[PROP_HAS_SELECTION]);
         }
     }
     
     if (mark == insert)
-      g_object_notify (G_OBJECT (buffer), "cursor-position");
+      g_object_notify_by_pspec (G_OBJECT (buffer), text_buffer_props[PROP_CURSOR_POSITION]);
 }
 
 static void
@@ -2848,9 +2847,7 @@ gtk_text_buffer_remove_all_tags (GtkTextBuffer     *buffer,
       tmp_list = tmp_list->next;
     }
 
-  g_slist_foreach (tags, (GFunc) g_object_unref, NULL);
-  
-  g_slist_free (tags);
+  g_slist_free_full (tags, g_object_unref);
 }
 
 
@@ -3626,40 +3623,36 @@ static void
 update_selection_clipboards (GtkTextBuffer *buffer)
 {
   GtkTextBufferPrivate *priv;
-  GSList               *tmp_list = buffer->priv->selection_clipboards;
+  gboolean has_selection;
+  GtkTextIter start;
+  GtkTextIter end;
+  GSList *tmp_list;
 
   priv = buffer->priv;
 
   gtk_text_buffer_get_copy_target_list (buffer);
+  has_selection = gtk_text_buffer_get_selection_bounds (buffer, &start, &end);
+  tmp_list = buffer->priv->selection_clipboards;
 
   while (tmp_list)
     {
-      GtkTextIter start;
-      GtkTextIter end;
-      
       SelectionClipboard *selection_clipboard = tmp_list->data;
       GtkClipboard *clipboard = selection_clipboard->clipboard;
 
-      /* Determine whether we have a selection and adjust X selection
-       * accordingly.
-       */
-      if (!gtk_text_buffer_get_selection_bounds (buffer, &start, &end))
-	{
-	  if (gtk_clipboard_get_owner (clipboard) == G_OBJECT (buffer))
-	    gtk_clipboard_clear (clipboard);
-	}
-      else
-	{
-	  /* Even if we already have the selection, we need to update our
-	   * timestamp.
-	   */
+      if (has_selection)
+        {
+          /* Even if we already have the selection, we need to update our
+           * timestamp.
+           */
           gtk_clipboard_set_with_owner (clipboard,
                                         priv->copy_target_entries,
                                         priv->n_copy_target_entries,
                                         clipboard_get_selection_cb,
                                         clipboard_clear_selection_cb,
                                         G_OBJECT (buffer));
-	}
+        }
+      else if (gtk_clipboard_get_owner (clipboard) == G_OBJECT (buffer))
+        gtk_clipboard_clear (clipboard);
 
       tmp_list = tmp_list->next;
     }
@@ -4793,9 +4786,37 @@ get_tag_for_attributes (PangoAttrIterator *iter)
   if (attr)
     g_object_set (tag, "underline", ((PangoAttrInt*)attr)->value, NULL);
 
+  attr = pango_attr_iterator_get (iter, PANGO_ATTR_UNDERLINE_COLOR);
+  if (attr)
+    {
+      PangoColor *color;
+      GdkRGBA rgba;
+
+      color = &((PangoAttrColor*)attr)->color;
+      rgba.red = color->red / 65535.;
+      rgba.green = color->green / 65535.;
+      rgba.blue = color->blue / 65535.;
+      rgba.alpha = 1.;
+      g_object_set (tag, "underline-rgba", &rgba, NULL);
+    }
+
   attr = pango_attr_iterator_get (iter, PANGO_ATTR_STRIKETHROUGH);
   if (attr)
     g_object_set (tag, "strikethrough", (gboolean) (((PangoAttrInt*)attr)->value != 0), NULL);
+
+  attr = pango_attr_iterator_get (iter, PANGO_ATTR_STRIKETHROUGH_COLOR);
+  if (attr)
+    {
+      PangoColor *color;
+      GdkRGBA rgba;
+
+      color = &((PangoAttrColor*)attr)->color;
+      rgba.red = color->red / 65535.;
+      rgba.green = color->green / 65535.;
+      rgba.blue = color->blue / 65535.;
+      rgba.alpha = 1.;
+      g_object_set (tag, "strikethrough-rgba", &rgba, NULL);
+    }
 
   attr = pango_attr_iterator_get (iter, PANGO_ATTR_RISE);
   if (attr)
@@ -4812,6 +4833,10 @@ get_tag_for_attributes (PangoAttrIterator *iter)
   attr = pango_attr_iterator_get (iter, PANGO_ATTR_LETTER_SPACING);
   if (attr)
     g_object_set (tag, "letter-spacing", ((PangoAttrInt*)attr)->value, NULL);
+
+  attr = pango_attr_iterator_get (iter, PANGO_ATTR_FONT_FEATURES);
+  if (attr)
+    g_object_set (tag, "font-features", ((PangoAttrString*)attr)->value, NULL);
 
   return tag;
 }

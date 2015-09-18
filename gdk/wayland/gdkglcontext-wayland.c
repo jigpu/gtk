@@ -95,13 +95,78 @@ gdk_wayland_window_invalidate_for_new_frame (GdkWindow      *window,
       window_rect.height = gdk_window_get_height (window);
 
       /* If nothing else is known, repaint everything so that the back
-         buffer is fully up-to-date for the swapbuffer */
+       * buffer is fully up-to-date for the swapbuffer
+       */
       cairo_region_union_rectangle (update_area, &window_rect);
     }
 }
 
+#define N_EGL_ATTRS     16
+
+static gboolean
+gdk_wayland_gl_context_realize (GdkGLContext *context,
+                                GError      **error)
+{
+  GdkWaylandGLContext *context_wayland = GDK_WAYLAND_GL_CONTEXT (context);
+  GdkDisplay *display = gdk_gl_context_get_display (context);
+  GdkGLContext *share = gdk_gl_context_get_shared_context (context);
+  GdkWaylandDisplay *display_wayland = GDK_WAYLAND_DISPLAY (display);
+  EGLContext ctx;
+  EGLint context_attribs[N_EGL_ATTRS];
+  int major, minor, flags;
+  gboolean debug_bit, forward_bit;
+  int i = 0;
+
+  gdk_gl_context_get_required_version (context, &major, &minor);
+  debug_bit = gdk_gl_context_get_debug_enabled (context);
+  forward_bit = gdk_gl_context_get_forward_compatible (context);
+
+  flags = 0;
+
+  if (debug_bit)
+    flags |= EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
+  if (forward_bit)
+    flags |= EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR;
+
+  /* We want a core profile */
+  context_attribs[i++] = EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR;
+  context_attribs[i++] = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR;
+
+  /* Specify the version */
+  context_attribs[i++] = EGL_CONTEXT_MAJOR_VERSION_KHR;
+  context_attribs[i++] = major;
+  context_attribs[i++] = EGL_CONTEXT_MINOR_VERSION_KHR;
+  context_attribs[i++] = minor;
+
+  /* Specify the flags */
+  context_attribs[i++] = EGL_CONTEXT_FLAGS_KHR;
+  context_attribs[i++] = flags;
+
+  context_attribs[i++] = EGL_NONE;
+  g_assert (i < N_EGL_ATTRS);
+
+  ctx = eglCreateContext (display_wayland->egl_display,
+                          context_wayland->egl_config,
+                          share != NULL ? GDK_WAYLAND_GL_CONTEXT (share)->egl_context
+                                        : EGL_NO_CONTEXT,
+                          context_attribs);
+  if (ctx == NULL)
+    {
+      g_set_error_literal (error, GDK_GL_ERROR,
+                           GDK_GL_ERROR_NOT_AVAILABLE,
+                           _("Unable to create a GL context"));
+      return FALSE;
+    }
+
+  GDK_NOTE (OPENGL, g_print ("Created EGL context[%p]\n", ctx));
+
+  context_wayland->egl_context = ctx;
+
+  return TRUE;
+}
+
 static void
-gdk_wayland_gl_context_end_frame (GdkGLContext *context,
+gdk_wayland_gl_context_end_frame (GdkGLContext   *context,
                                   cairo_region_t *painted,
                                   cairo_region_t *damage)
 {
@@ -116,7 +181,7 @@ gdk_wayland_gl_context_end_frame (GdkGLContext *context,
   egl_surface = gdk_wayland_window_get_egl_surface (window->impl_window,
                                                     context_wayland->egl_config);
 
-  // TODO: Use eglSwapBuffersWithDamageEXT if available
+  /* TODO: Use eglSwapBuffersWithDamageEXT if available */
   if (display_wayland->have_egl_swap_buffers_with_damage)
     {
       int i, j, n_rects = cairo_region_num_rectangles (damage);
@@ -142,11 +207,13 @@ gdk_wayland_gl_context_end_frame (GdkGLContext *context,
 static void
 gdk_wayland_gl_context_class_init (GdkWaylandGLContextClass *klass)
 {
-  GdkGLContextClass *context_class = GDK_GL_CONTEXT_CLASS (klass);
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
+  GdkGLContextClass *context_class = GDK_GL_CONTEXT_CLASS (klass);
 
-  context_class->end_frame = gdk_wayland_gl_context_end_frame;
   gobject_class->dispose = gdk_x11_gl_context_dispose;
+
+  context_class->realize = gdk_wayland_gl_context_realize;
+  context_class->end_frame = gdk_wayland_gl_context_end_frame;
 }
 
 static void
@@ -213,9 +280,9 @@ gdk_wayland_display_init_gl (GdkDisplay *display)
 #define MAX_EGL_ATTRS   30
 
 static gboolean
-find_eglconfig_for_window (GdkWindow        *window,
-                           EGLConfig         *egl_config_out,
-                           GError           **error)
+find_eglconfig_for_window (GdkWindow  *window,
+                           EGLConfig  *egl_config_out,
+                           GError    **error)
 {
   GdkDisplay *display = gdk_window_get_display (window);
   GdkWaylandDisplay *display_wayland = GDK_WAYLAND_DISPLAY (display);
@@ -287,17 +354,13 @@ find_eglconfig_for_window (GdkWindow        *window,
 GdkGLContext *
 gdk_wayland_window_create_gl_context (GdkWindow     *window,
 				      gboolean       attached,
-                                      GdkGLProfile   profile,
                                       GdkGLContext  *share,
                                       GError       **error)
 {
   GdkDisplay *display = gdk_window_get_display (window);
   GdkWaylandDisplay *display_wayland = GDK_WAYLAND_DISPLAY (display);
   GdkWaylandGLContext *context;
-  EGLContext ctx;
   EGLConfig config;
-  int i;
-  EGLint context_attribs[3];
 
   if (!gdk_wayland_display_init_gl (display))
     {
@@ -307,53 +370,24 @@ gdk_wayland_window_create_gl_context (GdkWindow     *window,
       return NULL;
     }
 
-  if (profile == GDK_GL_PROFILE_DEFAULT)
-    profile = GDK_GL_PROFILE_LEGACY;
-
-  if (profile == GDK_GL_PROFILE_3_2_CORE &&
-      !display_wayland->have_egl_khr_create_context)
+  if (!display_wayland->have_egl_khr_create_context)
     {
       g_set_error_literal (error, GDK_GL_ERROR,
                            GDK_GL_ERROR_UNSUPPORTED_PROFILE,
-                           _("3.2 core GL profile is not available on EGL implementation"));
+                           _("Core GL is not available on EGL implementation"));
       return NULL;
     }
 
   if (!find_eglconfig_for_window (window, &config, error))
     return NULL;
 
-  i = 0;
-  if (profile == GDK_GL_PROFILE_3_2_CORE)
-    {
-      context_attribs[i++] = EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR;
-      context_attribs[i++] = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR;
-    }
-  context_attribs[i++] = EGL_NONE;
-
-  ctx = eglCreateContext (display_wayland->egl_display,
-                          config,
-                          share ? GDK_WAYLAND_GL_CONTEXT (share)->egl_context : EGL_NO_CONTEXT,
-                          context_attribs);
-  if (ctx == NULL)
-    {
-      g_set_error_literal (error, GDK_GL_ERROR,
-                           GDK_GL_ERROR_NOT_AVAILABLE,
-                           _("Unable to create a GL context"));
-      return NULL;
-    }
-
-  GDK_NOTE (OPENGL,
-            g_print ("Created EGL context[%p]\n", ctx));
-
   context = g_object_new (GDK_TYPE_WAYLAND_GL_CONTEXT,
                           "display", display,
                           "window", window,
-                          "profile", profile,
                           "shared-context", share,
                           NULL);
 
   context->egl_config = config;
-  context->egl_context = ctx;
   context->is_attached = attached;
 
   return GDK_GL_CONTEXT (context);

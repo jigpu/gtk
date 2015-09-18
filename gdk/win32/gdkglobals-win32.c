@@ -20,7 +20,7 @@
  * Modified by the GTK+ Team and others 1997-2000.  See the AUTHORS
  * file for a list of people on the GTK+ Team.  See the ChangeLog
  * files for a list of changes.  These files are distributed with
- * GTK+ at ftp://ftp.gtk.org/pub/gtk/. 
+ * GTK+ at ftp://ftp.gtk.org/pub/gtk/.
  */
 
 #include "config.h"
@@ -82,3 +82,5 @@ gboolean	  _ignore_destroy_clipboard = FALSE;
 
 HGLOBAL           _delayed_rendering_data = NULL;
 GHashTable       *_format_atom_table = NULL;
+
+gboolean          _is_win8_or_later = FALSE;

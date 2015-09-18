@@ -55,7 +55,8 @@
 #include "gtktypebuiltins.h"
 #include "gtkprivate.h"
 #include "gtksettings.h"
-
+#include "gtkstylecontextprivate.h"
+#include "gtkbitmaskprivate.h"
 
 /**
  * SECTION:gtkfilechooserbutton
@@ -838,8 +839,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 
   list = _gtk_bookmarks_manager_list_bookmarks (priv->bookmarks_manager);
   model_add_bookmarks (button, list);
-  g_slist_foreach (list, (GFunc) g_object_unref, NULL);
-  g_slist_free (list);
+  g_slist_free_full (list, g_object_unref);
 
   model_add_other (button);
 
@@ -1033,11 +1033,12 @@ gtk_file_chooser_button_destroy (GtkWidget *widget)
       priv->dialog = NULL;
     }
 
-  if (priv->model && gtk_tree_model_get_iter_first (priv->model, &iter)) do
+  if (priv->model && gtk_tree_model_get_iter_first (priv->model, &iter))
     {
-      model_free_row_data (button, &iter);
+      do
+        model_free_row_data (button, &iter);
+      while (gtk_tree_model_iter_next (priv->model, &iter));
     }
-  while (gtk_tree_model_iter_next (priv->model, &iter));
 
   if (priv->dnd_select_folder_cancellable)
     {
@@ -1126,8 +1127,7 @@ dnd_select_folder_get_info_cb (GCancellable *cancellable,
       data->selected =
 	(((data->action == GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER && is_folder) ||
 	  (data->action == GTK_FILE_CHOOSER_ACTION_OPEN && !is_folder)) &&
-	 gtk_file_chooser_select_file (GTK_FILE_CHOOSER (data->button->priv->dialog),
-				       data->file, NULL));
+	 gtk_file_chooser_select_file (GTK_FILE_CHOOSER (data->button), data->file, NULL));
     }
   else
     data->selected = FALSE;
@@ -1217,8 +1217,7 @@ gtk_file_chooser_button_drag_data_received (GtkWidget	     *widget,
     case TEXT_PLAIN:
       text = (char*) gtk_selection_data_get_text (data);
       file = g_file_new_for_uri (text);
-      gtk_file_chooser_select_file (GTK_FILE_CHOOSER (priv->dialog), file,
-				    NULL);
+      gtk_file_chooser_select_file (GTK_FILE_CHOOSER (priv->dialog), file, NULL);
       g_object_unref (file);
       g_free (text);
       g_signal_emit (button, file_chooser_button_signals[FILE_SET], 0);
@@ -1474,7 +1473,14 @@ gtk_file_chooser_button_style_updated (GtkWidget *widget)
   GTK_WIDGET_CLASS (gtk_file_chooser_button_parent_class)->style_updated (widget);
 
   if (gtk_widget_has_screen (widget))
-    change_icon_theme (GTK_FILE_CHOOSER_BUTTON (widget));
+    {
+      /* We need to update the icon surface, but only in case
+       * the icon theme really changed. */
+      GtkStyleContext *context = gtk_widget_get_style_context (widget);
+      const GtkBitmask *changes = _gtk_style_context_get_changes (context);
+      if (!changes || _gtk_bitmask_get (changes, GTK_CSS_PROPERTY_ICON_THEME))
+        change_icon_theme (GTK_FILE_CHOOSER_BUTTON (widget));
+    }
 }
 
 static void
@@ -1574,8 +1580,7 @@ out:
   gtk_tree_row_reference_free (data->row_ref);
   g_free (data);
 
-  if (model_cancellable)
-    g_object_unref (model_cancellable);
+  g_object_unref (cancellable);
 }
 
 static void
@@ -1678,10 +1683,7 @@ model_free_row_data (GtkFileChooserButton *button,
 		      -1);
 
   if (cancellable)
-    {
-      g_cancellable_cancel (cancellable);
-      g_object_unref (cancellable);
-    }
+    g_cancellable_cancel (cancellable);
 
   switch (type)
     {
@@ -1761,8 +1763,7 @@ out:
   gtk_tree_row_reference_free (data->row_ref);
   g_free (data);
 
-  if (model_cancellable)
-    g_object_unref (model_cancellable);
+  g_object_unref (cancellable);
 }
 
 static void
@@ -2618,14 +2619,12 @@ bookmarks_changed_cb (gpointer user_data)
 
   bookmarks = _gtk_bookmarks_manager_list_bookmarks (priv->bookmarks_manager);
   model_remove_rows (user_data,
-		     model_get_type_position (user_data,
-					      ROW_TYPE_BOOKMARK_SEPARATOR),
-		     (priv->n_bookmarks + priv->has_bookmark_separator));
+		     model_get_type_position (user_data, ROW_TYPE_BOOKMARK_SEPARATOR),
+		     priv->n_bookmarks + priv->has_bookmark_separator);
   priv->has_bookmark_separator = FALSE;
   priv->n_bookmarks = 0;
   model_add_bookmarks (user_data, bookmarks);
-  g_slist_foreach (bookmarks, (GFunc) g_object_unref, NULL);
-  g_slist_free (bookmarks);
+  g_slist_free_full (bookmarks, g_object_unref);
 
   gtk_tree_model_filter_refilter (GTK_TREE_MODEL_FILTER (priv->filter_model));
 
@@ -2788,6 +2787,7 @@ combo_box_notify_popup_shown_cb (GObject    *object,
 
   /* If the combo box popup got dismissed, go back to showing the ROW_TYPE_EMPTY_SELECTION if needed */
   if (!popup_shown)
+
     {
       GFile *selected = get_selected_file (button);
 

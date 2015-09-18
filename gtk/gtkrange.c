@@ -34,6 +34,7 @@
 #include "gtkadjustmentprivate.h"
 #include "gtkcolorscaleprivate.h"
 #include "gtkintl.h"
+#include "gtkgesturelongpressprivate.h"
 #include "gtkmain.h"
 #include "gtkmarshalers.h"
 #include "gtkorientableprivate.h"
@@ -137,12 +138,6 @@ struct _GtkRangePrivate
 
   /* Whether we're doing fine adjustment */
   guint zoom                   : 1;
-  GtkGesture *long_press_gesture;
-  GtkScrollType autoscroll_mode;
-  guint autoscroll_id;
-
-  GtkGesture *multipress_gesture;
-  GtkGesture *drag_gesture;
 
   /* Fill level */
   guint show_fill_level        : 1;
@@ -150,12 +145,18 @@ struct _GtkRangePrivate
 
   /* Whether dragging is ongoing */
   guint in_drag                : 1;
+
+  GtkGesture *long_press_gesture;
+  GtkGesture *multipress_gesture;
+  GtkGesture *drag_gesture;
+
+  GtkScrollType autoscroll_mode;
+  guint autoscroll_id;
 };
 
 
 enum {
   PROP_0,
-  PROP_ORIENTATION,
   PROP_ADJUSTMENT,
   PROP_INVERTED,
   PROP_LOWER_STEPPER_SENSITIVITY,
@@ -163,7 +164,9 @@ enum {
   PROP_SHOW_FILL_LEVEL,
   PROP_RESTRICT_TO_FILL_LEVEL,
   PROP_FILL_LEVEL,
-  PROP_ROUND_DIGITS
+  PROP_ROUND_DIGITS,
+  PROP_ORIENTATION,
+  LAST_PROP = PROP_ORIENTATION
 };
 
 enum {
@@ -243,6 +246,8 @@ static void update_slider_position   (GtkRange	       *range,
 				      gint              mouse_x,
 				      gint              mouse_y);
 static void stop_scrolling           (GtkRange         *range);
+static void add_autoscroll           (GtkRange         *range);
+static void remove_autoscroll        (GtkRange         *range);
 
 /* Range methods */
 
@@ -300,7 +305,7 @@ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (GtkRange, gtk_range, GTK_TYPE_WIDGET,
                                                          NULL))
 
 static guint signals[LAST_SIGNAL];
-
+static GParamSpec *properties[LAST_PROP];
 
 static void
 gtk_range_class_init (GtkRangeClass *class)
@@ -362,7 +367,7 @@ gtk_range_class_init (GtkRangeClass *class)
                   _gtk_marshal_VOID__DOUBLE,
                   G_TYPE_NONE, 1,
                   G_TYPE_DOUBLE);
-  
+
   /**
    * GtkRange::move-slider:
    * @range: the #GtkRange that received the signal
@@ -418,43 +423,37 @@ gtk_range_class_init (GtkRangeClass *class)
                   GTK_TYPE_SCROLL_TYPE,
                   G_TYPE_DOUBLE);
 
-  g_object_class_override_property (gobject_class,
-                                    PROP_ORIENTATION,
-                                    "orientation");
+  g_object_class_override_property (gobject_class, PROP_ORIENTATION, "orientation");
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_ADJUSTMENT,
-                                   g_param_spec_object ("adjustment",
-							P_("Adjustment"),
-							P_("The GtkAdjustment that contains the current value of this range object"),
-                                                        GTK_TYPE_ADJUSTMENT,
-                                                        GTK_PARAM_READWRITE | G_PARAM_CONSTRUCT));
+  properties[PROP_ADJUSTMENT] =
+      g_param_spec_object ("adjustment",
+                           P_("Adjustment"),
+                           P_("The GtkAdjustment that contains the current value of this range object"),
+                           GTK_TYPE_ADJUSTMENT,
+                           GTK_PARAM_READWRITE|G_PARAM_CONSTRUCT);
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_INVERTED,
-                                   g_param_spec_boolean ("inverted",
-							P_("Inverted"),
-							P_("Invert direction slider moves to increase range value"),
-                                                         FALSE,
-                                                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_INVERTED] =
+      g_param_spec_boolean ("inverted",
+                            P_("Inverted"),
+                            P_("Invert direction slider moves to increase range value"),
+                            FALSE,
+                            GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_LOWER_STEPPER_SENSITIVITY,
-                                   g_param_spec_enum ("lower-stepper-sensitivity",
-						      P_("Lower stepper sensitivity"),
-						      P_("The sensitivity policy for the stepper that points to the adjustment's lower side"),
-						      GTK_TYPE_SENSITIVITY_TYPE,
-						      GTK_SENSITIVITY_AUTO,
-						      GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_LOWER_STEPPER_SENSITIVITY] =
+      g_param_spec_enum ("lower-stepper-sensitivity",
+                         P_("Lower stepper sensitivity"),
+                         P_("The sensitivity policy for the stepper that points to the adjustment's lower side"),
+                         GTK_TYPE_SENSITIVITY_TYPE,
+                         GTK_SENSITIVITY_AUTO,
+                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_UPPER_STEPPER_SENSITIVITY,
-                                   g_param_spec_enum ("upper-stepper-sensitivity",
-						      P_("Upper stepper sensitivity"),
-						      P_("The sensitivity policy for the stepper that points to the adjustment's upper side"),
-						      GTK_TYPE_SENSITIVITY_TYPE,
-						      GTK_SENSITIVITY_AUTO,
-						      GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_UPPER_STEPPER_SENSITIVITY] =
+      g_param_spec_enum ("upper-stepper-sensitivity",
+                         P_("Upper stepper sensitivity"),
+                         P_("The sensitivity policy for the stepper that points to the adjustment's upper side"),
+                         GTK_TYPE_SENSITIVITY_TYPE,
+                         GTK_SENSITIVITY_AUTO,
+                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
   /**
    * GtkRange:show-fill-level:
@@ -465,13 +464,12 @@ gtk_range_class_init (GtkRangeClass *class)
    *
    * Since: 2.12
    **/
-  g_object_class_install_property (gobject_class,
-                                   PROP_SHOW_FILL_LEVEL,
-                                   g_param_spec_boolean ("show-fill-level",
-                                                         P_("Show Fill Level"),
-                                                         P_("Whether to display a fill level indicator graphics on trough."),
-                                                         FALSE,
-                                                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_SHOW_FILL_LEVEL] =
+      g_param_spec_boolean ("show-fill-level",
+                            P_("Show Fill Level"),
+                            P_("Whether to display a fill level indicator graphics on trough."),
+                            FALSE,
+                            GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
   /**
    * GtkRange:restrict-to-fill-level:
@@ -482,13 +480,12 @@ gtk_range_class_init (GtkRangeClass *class)
    *
    * Since: 2.12
    **/
-  g_object_class_install_property (gobject_class,
-                                   PROP_RESTRICT_TO_FILL_LEVEL,
-                                   g_param_spec_boolean ("restrict-to-fill-level",
-                                                         P_("Restrict to Fill Level"),
-                                                         P_("Whether to restrict the upper boundary to the fill level."),
-                                                         TRUE,
-                                                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_RESTRICT_TO_FILL_LEVEL] =
+      g_param_spec_boolean ("restrict-to-fill-level",
+                            P_("Restrict to Fill Level"),
+                            P_("Whether to restrict the upper boundary to the fill level."),
+                            TRUE,
+                            GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
   /**
    * GtkRange:fill-level:
@@ -498,15 +495,13 @@ gtk_range_class_init (GtkRangeClass *class)
    *
    * Since: 2.12
    **/
-  g_object_class_install_property (gobject_class,
-                                   PROP_FILL_LEVEL,
-                                   g_param_spec_double ("fill-level",
-							P_("Fill Level"),
-							P_("The fill level."),
-							-G_MAXDOUBLE,
-							G_MAXDOUBLE,
-                                                        G_MAXDOUBLE,
-                                                        GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_FILL_LEVEL] =
+      g_param_spec_double ("fill-level",
+                           P_("Fill Level"),
+                           P_("The fill level."),
+                           -G_MAXDOUBLE, G_MAXDOUBLE,
+                           G_MAXDOUBLE,
+                           GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
   /**
    * GtkRange:round-digits:
@@ -516,13 +511,15 @@ gtk_range_class_init (GtkRangeClass *class)
    *
    * Since: 2.24
    */
-  g_object_class_install_property (gobject_class,
-                                   PROP_ROUND_DIGITS,
-                                   g_param_spec_int ("round-digits",
-                                                     P_("Round Digits"),
-                                                     P_("The number of digits to round the value to."),
-                                                     -1, G_MAXINT, -1,
-                                                     GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_ROUND_DIGITS] =
+      g_param_spec_int ("round-digits",
+                        P_("Round Digits"),
+                        P_("The number of digits to round the value to."),
+                        -1, G_MAXINT,
+                        -1,
+                        GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
+
+  g_object_class_install_properties (gobject_class, LAST_PROP, properties);
 
   gtk_widget_class_install_style_property (widget_class,
 					   g_param_spec_int ("slider-width",
@@ -749,6 +746,7 @@ gtk_range_init (GtkRange *range)
    * widget.
    */
   priv->drag_gesture = gtk_gesture_drag_new (GTK_WIDGET (range));
+  gtk_gesture_single_set_button (GTK_GESTURE_SINGLE (priv->drag_gesture), 0);
   g_signal_connect (priv->drag_gesture, "drag-begin",
                     G_CALLBACK (gtk_range_drag_gesture_begin), range);
   g_signal_connect (priv->drag_gesture, "drag-update",
@@ -764,6 +762,7 @@ gtk_range_init (GtkRange *range)
                     G_CALLBACK (gtk_range_multipress_gesture_released), range);
 
   priv->long_press_gesture = gtk_gesture_long_press_new (GTK_WIDGET (range));
+  g_object_set (priv->long_press_gesture, "delay-factor", 2.0, NULL);
   gtk_gesture_group (priv->drag_gesture, priv->long_press_gesture);
   g_signal_connect (priv->long_press_gesture, "pressed",
                     G_CALLBACK (gtk_range_long_press_gesture_pressed), range);
@@ -847,7 +846,7 @@ gtk_range_set_adjustment (GtkRange      *range,
 			range);
       
       gtk_range_adjustment_changed (adjustment, range);
-      g_object_notify (G_OBJECT (range), "adjustment");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_ADJUSTMENT]);
     }
 }
 
@@ -876,7 +875,7 @@ gtk_range_set_inverted (GtkRange *range,
   if (setting != priv->inverted)
     {
       priv->inverted = setting;
-      g_object_notify (G_OBJECT (range), "inverted");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_INVERTED]);
       gtk_widget_queue_resize (GTK_WIDGET (range));
     }
 }
@@ -1146,7 +1145,7 @@ gtk_range_set_lower_stepper_sensitivity (GtkRange           *range,
 
       gtk_range_calc_stepper_sensitivity (range);
 
-      g_object_notify (G_OBJECT (range), "lower-stepper-sensitivity");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_LOWER_STEPPER_SENSITIVITY]);
     }
 }
 
@@ -1195,7 +1194,7 @@ gtk_range_set_upper_stepper_sensitivity (GtkRange           *range,
 
       gtk_range_calc_stepper_sensitivity (range);
 
-      g_object_notify (G_OBJECT (range), "upper-stepper-sensitivity");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_UPPER_STEPPER_SENSITIVITY]);
     }
 }
 
@@ -1357,7 +1356,7 @@ gtk_range_set_show_fill_level (GtkRange *range,
   if (show_fill_level != priv->show_fill_level)
     {
       priv->show_fill_level = show_fill_level;
-      g_object_notify (G_OBJECT (range), "show-fill-level");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_SHOW_FILL_LEVEL]);
       gtk_widget_queue_draw (GTK_WIDGET (range));
     }
 }
@@ -1406,7 +1405,7 @@ gtk_range_set_restrict_to_fill_level (GtkRange *range,
   if (restrict_to_fill_level != priv->restrict_to_fill_level)
     {
       priv->restrict_to_fill_level = restrict_to_fill_level;
-      g_object_notify (G_OBJECT (range), "restrict-to-fill-level");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_RESTRICT_TO_FILL_LEVEL]);
 
       gtk_range_set_value (range, gtk_range_get_value (range));
     }
@@ -1468,7 +1467,7 @@ gtk_range_set_fill_level (GtkRange *range,
   if (fill_level != priv->fill_level)
     {
       priv->fill_level = fill_level;
-      g_object_notify (G_OBJECT (range), "fill-level");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_FILL_LEVEL]);
 
       if (priv->show_fill_level)
         gtk_widget_queue_draw (GTK_WIDGET (range));
@@ -1646,14 +1645,13 @@ gtk_range_realize (GtkWidget *widget)
   attributes.height = allocation.height;
   attributes.wclass = GDK_INPUT_ONLY;
   attributes.event_mask = gtk_widget_get_events (widget);
-  attributes.event_mask |= (GDK_BUTTON_PRESS_MASK |
-                            GDK_BUTTON_RELEASE_MASK |
-                            GDK_SCROLL_MASK |
-                            GDK_SMOOTH_SCROLL_MASK |
-                            GDK_ENTER_NOTIFY_MASK |
-                            GDK_LEAVE_NOTIFY_MASK |
-                            GDK_POINTER_MOTION_MASK |
-                            GDK_POINTER_MOTION_HINT_MASK);
+  attributes.event_mask |= GDK_BUTTON_PRESS_MASK |
+                           GDK_BUTTON_RELEASE_MASK |
+                           GDK_SCROLL_MASK |
+                           GDK_SMOOTH_SCROLL_MASK |
+                           GDK_ENTER_NOTIFY_MASK |
+                           GDK_LEAVE_NOTIFY_MASK |
+                           GDK_POINTER_MOTION_MASK;
 
   attributes_mask = GDK_WA_X | GDK_WA_Y;
 
@@ -1840,7 +1838,7 @@ draw_stepper (GtkRange     *range,
 
   gtk_style_context_save (context);
 
-  /* don't set juction sides on scrollbar steppers */
+  /* don't set junction sides on scrollbar steppers */
   if (gtk_style_context_has_class (context, GTK_STYLE_CLASS_SCROLLBAR))
     gtk_style_context_set_junction_sides (context, GTK_JUNCTION_NONE);
   else
@@ -2034,8 +2032,6 @@ gtk_range_draw (GtkWidget *widget,
             }
           else
             {
-              gboolean is_rtl = gtk_widget_get_direction (widget) == GTK_TEXT_DIR_RTL;
-
               gint trough_change_pos_x = width;
               gint trough_change_pos_y = height;
 
@@ -2050,14 +2046,12 @@ gtk_range_draw (GtkWidget *widget,
 
               gtk_style_context_save (context);
               if (priv->orientation == GTK_ORIENTATION_HORIZONTAL)
-                {
-                  gtk_style_context_add_class (context, GTK_STYLE_CLASS_LEFT);
-
-                  if (!is_rtl)
-                    gtk_style_context_add_class (context, GTK_STYLE_CLASS_HIGHLIGHT);
-                }
+                gtk_style_context_add_class (context, GTK_STYLE_CLASS_LEFT);
               else
                 gtk_style_context_add_class (context, GTK_STYLE_CLASS_TOP);
+
+              if (!should_invert (range))
+                gtk_style_context_add_class (context, GTK_STYLE_CLASS_HIGHLIGHT);
 
               gtk_render_background (context, cr, x, y,
                                      trough_change_pos_x,
@@ -2076,17 +2070,12 @@ gtk_range_draw (GtkWidget *widget,
 
               gtk_style_context_save (context);
               if (priv->orientation == GTK_ORIENTATION_HORIZONTAL)
-                {
-                  gtk_style_context_add_class (context, GTK_STYLE_CLASS_RIGHT);
-
-                  if (is_rtl)
-                    gtk_style_context_add_class (context, GTK_STYLE_CLASS_HIGHLIGHT);
-                }
+                gtk_style_context_add_class (context, GTK_STYLE_CLASS_RIGHT);
               else
-                {
-                  gtk_style_context_add_class (context, GTK_STYLE_CLASS_BOTTOM);
-                  gtk_style_context_add_class (context, GTK_STYLE_CLASS_HIGHLIGHT);
-                }
+                gtk_style_context_add_class (context, GTK_STYLE_CLASS_BOTTOM);
+
+              if (should_invert (range))
+                gtk_style_context_add_class (context, GTK_STYLE_CLASS_HIGHLIGHT);
 
               gtk_render_background (context, cr,
                                      x + trough_change_pos_x, y + trough_change_pos_y,
@@ -2108,11 +2097,12 @@ gtk_range_draw (GtkWidget *widget,
           gtk_adjustment_get_upper (priv->adjustment) - gtk_adjustment_get_page_size (priv->adjustment) -
           gtk_adjustment_get_lower (priv->adjustment) != 0)
         {
-          gdouble  fill_level  = priv->fill_level;
-          gint     fill_x      = x;
-          gint     fill_y      = y;
-          gint     fill_width  = width;
-          gint     fill_height = height;
+          gdouble  fill_level      = priv->fill_level;
+          gint     fill_x          = x;
+          gint     fill_y          = y;
+          gint     fill_width      = width;
+          gint     fill_height     = height;
+          gdouble  fill_proportion = 0.0;
 
           gtk_style_context_save (context);
           gtk_style_context_add_class (context, GTK_STYLE_CLASS_PROGRESSBAR);
@@ -2121,33 +2111,36 @@ gtk_range_draw (GtkWidget *widget,
                               gtk_adjustment_get_upper (priv->adjustment) -
                               gtk_adjustment_get_page_size (priv->adjustment));
 
-          if (priv->orientation == GTK_ORIENTATION_HORIZONTAL)
-            {
-              fill_x     = priv->trough.x;
-              fill_width = (priv->slider.width +
-                            (fill_level - gtk_adjustment_get_lower (priv->adjustment)) /
+          fill_proportion = (fill_level - gtk_adjustment_get_lower (priv->adjustment)) /
                             (gtk_adjustment_get_upper (priv->adjustment) -
                              gtk_adjustment_get_lower (priv->adjustment) -
-                             gtk_adjustment_get_page_size (priv->adjustment)) *
-                            (priv->trough.width -
-                             priv->slider.width));
+                             gtk_adjustment_get_page_size (priv->adjustment));
 
-              if (should_invert (range))
-                fill_x += priv->trough.width - fill_width;
+          if (priv->orientation == GTK_ORIENTATION_HORIZONTAL)
+            {
+              if (!should_invert (range))
+                {
+                  fill_x     = priv->slider.x + (priv->slider.width / 2);
+                  fill_width = (width * fill_proportion) - fill_x + x;
+                }
+              else
+                {
+                  fill_x     = x + width * (1.0 - fill_proportion);
+                  fill_width = priv->slider.x + (priv->slider.width / 2) - fill_x;
+                }
             }
           else
             {
-              fill_y      = priv->trough.y;
-              fill_height = (priv->slider.height +
-                             (fill_level - gtk_adjustment_get_lower (priv->adjustment)) /
-                             (gtk_adjustment_get_upper (priv->adjustment) -
-                              gtk_adjustment_get_lower (priv->adjustment) -
-                              gtk_adjustment_get_page_size (priv->adjustment)) *
-                             (priv->trough.height -
-                              priv->slider.height));
-
-              if (should_invert (range))
-                fill_y += priv->trough.height - fill_height;
+              if (!should_invert (range))
+                {
+                  fill_y      = priv->slider.y + (priv->slider.height / 2);
+                  fill_height = (height * fill_proportion) - fill_y + y;
+                }
+              else
+                {
+                  fill_y      = y + height * (1.0 - fill_proportion);
+                  fill_height = priv->slider.y + (priv->slider.height / 2) - fill_y;
+                }
             }
 
           gtk_render_background (context, cr, fill_x, fill_y, fill_width, fill_height);
@@ -2288,7 +2281,7 @@ range_grab_remove (GtkRange *range)
 }
 
 static GtkScrollType
-range_get_scroll_for_grab (GtkRange      *range)
+range_get_scroll_for_grab (GtkRange *range)
 {
   GtkRangePrivate *priv = range->priv;
   guint grab_button;
@@ -2307,10 +2300,10 @@ range_get_scroll_for_grab (GtkRange      *range)
         case GDK_BUTTON_PRIMARY:
           return invert ? GTK_SCROLL_STEP_FORWARD : GTK_SCROLL_STEP_BACKWARD;
           break;
-        case GDK_BUTTON_MIDDLE:
+        case GDK_BUTTON_SECONDARY:
           return invert ? GTK_SCROLL_PAGE_FORWARD : GTK_SCROLL_PAGE_BACKWARD;
           break;
-        case GDK_BUTTON_SECONDARY:
+        case GDK_BUTTON_MIDDLE:
           return invert ? GTK_SCROLL_END : GTK_SCROLL_START;
           break;
         }
@@ -2324,10 +2317,10 @@ range_get_scroll_for_grab (GtkRange      *range)
         case GDK_BUTTON_PRIMARY:
           return invert ? GTK_SCROLL_STEP_BACKWARD : GTK_SCROLL_STEP_FORWARD;
           break;
-        case GDK_BUTTON_MIDDLE:
+        case GDK_BUTTON_SECONDARY:
           return invert ? GTK_SCROLL_PAGE_BACKWARD : GTK_SCROLL_PAGE_FORWARD;
           break;
-        case GDK_BUTTON_SECONDARY:
+        case GDK_BUTTON_MIDDLE:
           return invert ? GTK_SCROLL_START : GTK_SCROLL_END;
           break;
        }
@@ -2399,7 +2392,6 @@ coord_to_value (GtkRange *range,
   value = gtk_adjustment_get_lower (priv->adjustment) + frac * (gtk_adjustment_get_upper (priv->adjustment) -
                                             gtk_adjustment_get_lower (priv->adjustment) -
                                             gtk_adjustment_get_page_size (priv->adjustment));
-
   return value;
 }
 
@@ -2421,9 +2413,17 @@ gtk_range_key_press (GtkWidget   *widget,
     {
       stop_scrolling (range);
 
-      update_slider_position (range,
-			      priv->slide_initial_coordinate_delta + priv->slide_initial_slider_position,
-			      priv->slide_initial_coordinate_delta + priv->slide_initial_slider_position);
+      return TRUE;
+    }
+  else if (priv->in_drag &&
+           (event->keyval == GDK_KEY_Shift_L ||
+            event->keyval == GDK_KEY_Shift_R))
+    {
+      if (priv->orientation == GTK_ORIENTATION_VERTICAL)
+        priv->slide_initial_slider_position = priv->slider.y;
+      else
+        priv->slide_initial_slider_position = priv->slider.x;
+      update_zoom_state (range, !priv->zoom);
 
       return TRUE;
     }
@@ -2437,7 +2437,25 @@ gtk_range_long_press_gesture_pressed (GtkGestureLongPress *gesture,
                                       gdouble              y,
                                       GtkRange            *range)
 {
-  update_zoom_state (range, TRUE);
+  GtkRangePrivate *priv = range->priv;
+
+  gtk_range_update_mouse_location (range);
+
+  if (priv->mouse_location == MOUSE_SLIDER && !priv->zoom)
+    {
+      if (priv->orientation == GTK_ORIENTATION_VERTICAL)
+        {
+          priv->slide_initial_slider_position = priv->slider.y;
+          priv->slide_initial_coordinate_delta = y - priv->slider.y;
+        }
+      else
+        {
+          priv->slide_initial_slider_position = priv->slider.x;
+          priv->slide_initial_coordinate_delta = x - priv->slider.x;
+        }
+
+      update_zoom_state (range, TRUE);
+    }
 }
 
 static void
@@ -2454,8 +2472,9 @@ gtk_range_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
   const GdkEvent *event;
   GdkInputSource source;
   gboolean primary_warps;
-  gint page_increment_button, warp_button;
+  gboolean shift_pressed;
   guint button;
+  GdkModifierType state_mask;
 
   if (!gtk_widget_has_focus (widget))
     gtk_widget_grab_focus (widget);
@@ -2463,6 +2482,8 @@ gtk_range_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
   sequence = gtk_gesture_single_get_current_sequence (GTK_GESTURE_SINGLE (gesture));
   button = gtk_gesture_single_get_current_button (GTK_GESTURE_SINGLE (gesture));
   event = gtk_gesture_get_last_event (GTK_GESTURE (gesture), sequence);
+  gdk_event_get_state (event, &state_mask);
+  shift_pressed = (state_mask & GDK_SHIFT_MASK) != 0;
 
   source_device = gdk_event_get_source_device ((GdkEvent *) event);
   source = gdk_device_get_source (source_device);
@@ -2475,16 +2496,6 @@ gtk_range_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
   g_object_get (gtk_widget_get_settings (widget),
                 "gtk-primary-button-warps-slider", &primary_warps,
                 NULL);
-  if (primary_warps)
-    {
-      warp_button = GDK_BUTTON_PRIMARY;
-      page_increment_button = GDK_BUTTON_SECONDARY;
-    }
-  else
-    {
-      warp_button = GDK_BUTTON_MIDDLE;
-      page_increment_button = GDK_BUTTON_PRIMARY;
-    }
 
   if (priv->mouse_location == MOUSE_SLIDER &&
       gdk_event_triggers_context_menu ((GdkEvent *)event))
@@ -2496,33 +2507,35 @@ gtk_range_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
       return;
     }
 
-  if (source != GDK_SOURCE_TOUCHSCREEN &&
-      priv->mouse_location == MOUSE_TROUGH &&
-      button == page_increment_button)
+  if (priv->mouse_location == MOUSE_SLIDER)
     {
-      /* button 2 steps by page increment, as with button 2 on a stepper
-       */
-      GtkScrollType scroll;
-      gdouble click_value;
+      GdkRectangle slider;
 
-      click_value = coord_to_value (range,
-                                    priv->orientation == GTK_ORIENTATION_VERTICAL ?
-                                    y : x);
+      /* Shift-click in the slider = fine adjustment */
+      if (shift_pressed)
+        update_zoom_state (range, TRUE);
 
-      priv->trough_click_forward = click_value > gtk_adjustment_get_value (priv->adjustment);
-      range_grab_add (range, MOUSE_TROUGH);
+      slider = priv->slider;
 
-      scroll = range_get_scroll_for_grab (range);
+      if (priv->orientation == GTK_ORIENTATION_VERTICAL)
+        {
+          priv->slide_initial_slider_position = slider.y;
+          priv->slide_initial_coordinate_delta = y - slider.y;
+        }
+      else
+        {
+          priv->slide_initial_slider_position = slider.x;
+          priv->slide_initial_coordinate_delta = x - slider.x;
+        }
 
-      gtk_range_add_step_timer (range, scroll);
+      range_grab_add (range, MOUSE_SLIDER);
+
+      gtk_widget_queue_draw (widget);
     }
-  else if ((priv->mouse_location == MOUSE_STEPPER_A ||
-            priv->mouse_location == MOUSE_STEPPER_B ||
-            priv->mouse_location == MOUSE_STEPPER_C ||
-            priv->mouse_location == MOUSE_STEPPER_D) &&
-           (button == GDK_BUTTON_PRIMARY ||
-            button == GDK_BUTTON_MIDDLE ||
-            button == GDK_BUTTON_SECONDARY))
+  else if (priv->mouse_location == MOUSE_STEPPER_A ||
+           priv->mouse_location == MOUSE_STEPPER_B ||
+           priv->mouse_location == MOUSE_STEPPER_C ||
+           priv->mouse_location == MOUSE_STEPPER_D)
     {
       GtkScrollType scroll;
 
@@ -2531,59 +2544,39 @@ gtk_range_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
       gtk_range_queue_draw_location (range, priv->mouse_location);
 
       scroll = range_get_scroll_for_grab (range);
-      if (scroll != GTK_SCROLL_NONE)
-        gtk_range_add_step_timer (range, scroll);
+      if (scroll == GTK_SCROLL_START || scroll == GTK_SCROLL_END)
+        gtk_range_scroll (range, scroll);
+      else if (scroll != GTK_SCROLL_NONE)
+        {
+          remove_autoscroll (range);
+          range->priv->autoscroll_mode = scroll;
+          add_autoscroll (range);
+        }
     }
-  else if ((priv->mouse_location == MOUSE_TROUGH &&
-            (source == GDK_SOURCE_TOUCHSCREEN ||
-             button == warp_button)) ||
-           priv->mouse_location == MOUSE_SLIDER)
+  else if (priv->mouse_location == MOUSE_TROUGH &&
+           (source == GDK_SOURCE_TOUCHSCREEN ||
+            (button == GDK_BUTTON_PRIMARY &&
+             ((primary_warps && !shift_pressed) ||
+              (!primary_warps && shift_pressed)))))
     {
-      gboolean need_value_update = FALSE;
+      /* warp to location */
       GdkRectangle slider;
+      gdouble slider_low_value, slider_high_value, new_value;
 
-      /* Any button can be used to drag the slider, but you can start
-       * dragging the slider with a trough click using button 1;
-       * we warp the slider to mouse position, then begin the slider drag.
-       */
-      if (priv->mouse_location != MOUSE_SLIDER)
-        {
-          gdouble slider_low_value, slider_high_value, new_value;
-          
-          slider_high_value =
-            coord_to_value (range,
-                            priv->orientation == GTK_ORIENTATION_VERTICAL ?
-                            y : x);
-          slider_low_value =
-            coord_to_value (range,
-                            priv->orientation == GTK_ORIENTATION_VERTICAL ?
-                            y - priv->slider.height :
-                            x - priv->slider.width);
+      slider_high_value =
+        coord_to_value (range,
+                        priv->orientation == GTK_ORIENTATION_VERTICAL ?
+                        y : x);
+      slider_low_value =
+        coord_to_value (range,
+                        priv->orientation == GTK_ORIENTATION_VERTICAL ?
+                        y - priv->slider.height :
+                        x - priv->slider.width);
 
-          /* compute new value for warped slider */
-          new_value = slider_low_value + (slider_high_value - slider_low_value) / 2;
+      /* compute new value for warped slider */
+      new_value = slider_low_value + (slider_high_value - slider_low_value) / 2;
 
-          gtk_range_compute_slider_position (range, new_value, &slider);
-
-	  /* defer adjustment updates to update_slider_position() in order
-	   * to keep pixel quantisation
-	   */
-	  need_value_update = TRUE;
-        }
-      else
-        {
-          GdkModifierType state_mask;
-
-          gdk_event_get_state (event, &state_mask);
-
-          /* Shift-click in the slider = fine adjustment */
-          if (state_mask & GDK_SHIFT_MASK)
-            {
-              update_zoom_state (range, TRUE);
-            }
-
-          slider = priv->slider;
-        }
+      gtk_range_compute_slider_position (range, new_value, &slider);
 
       if (priv->orientation == GTK_ORIENTATION_VERTICAL)
         {
@@ -2600,8 +2593,43 @@ gtk_range_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
 
       gtk_widget_queue_draw (widget);
 
-      if (need_value_update)
-        update_slider_position (range, x, y);
+      update_slider_position (range, x, y);
+    }
+  else if (priv->mouse_location == MOUSE_TROUGH &&
+           button == GDK_BUTTON_PRIMARY &&
+           ((primary_warps && shift_pressed) ||
+            (!primary_warps && !shift_pressed)))
+    {
+      /* jump by pages */
+      GtkScrollType scroll;
+      gdouble click_value;
+
+      click_value = coord_to_value (range,
+                                    priv->orientation == GTK_ORIENTATION_VERTICAL ?
+                                    y : x);
+
+      priv->trough_click_forward = click_value > gtk_adjustment_get_value (priv->adjustment);
+      range_grab_add (range, MOUSE_TROUGH);
+
+      scroll = range_get_scroll_for_grab (range);
+      gtk_range_add_step_timer (range, scroll);
+    }
+  else if (priv->mouse_location == MOUSE_TROUGH &&
+           button == GDK_BUTTON_SECONDARY)
+    {
+      /* autoscroll */
+      gdouble click_value;
+
+      click_value = coord_to_value (range,
+                                    priv->orientation == GTK_ORIENTATION_VERTICAL ?
+                                    y : x);
+
+      priv->trough_click_forward = click_value > gtk_adjustment_get_value (priv->adjustment);
+      range_grab_add (range, MOUSE_TROUGH);
+
+      remove_autoscroll (range);
+      range->priv->autoscroll_mode = priv->trough_click_forward ? GTK_SCROLL_END : GTK_SCROLL_START;
+      add_autoscroll (range);
     }
 
   if (priv->grab_location == MOUSE_SLIDER);
@@ -2715,21 +2743,69 @@ autoscroll_cb (GtkWidget     *widget,
                GdkFrameClock *frame_clock,
                gpointer       data)
 {
-  GtkRange *range;
+  GtkRange *range = GTK_RANGE (data);
+  GtkRangePrivate *priv = range->priv;
+  GtkAdjustment *adj = priv->adjustment;
   gdouble increment;
   gdouble value;
   gboolean handled;
+  gdouble step, page;
 
-  range = GTK_RANGE (data);
+  step = gtk_adjustment_get_step_increment (adj);
+  page = gtk_adjustment_get_page_increment (adj);
 
-  increment = gtk_adjustment_get_step_increment (range->priv->adjustment) / AUTOSCROLL_FACTOR;
-  if (range->priv->autoscroll_mode == GTK_SCROLL_STEP_BACKWARD)
-    increment *= -1;
+  switch (priv->autoscroll_mode)
+    {
+    case GTK_SCROLL_STEP_FORWARD:
+      increment = step / AUTOSCROLL_FACTOR;
+      break;
+    case GTK_SCROLL_PAGE_FORWARD:
+      increment = page / AUTOSCROLL_FACTOR;
+      break;
+    case GTK_SCROLL_STEP_BACKWARD:
+      increment = - step / AUTOSCROLL_FACTOR;
+      break;
+    case GTK_SCROLL_PAGE_BACKWARD:
+      increment = - page / AUTOSCROLL_FACTOR;
+      break;
+    case GTK_SCROLL_START:
+    case GTK_SCROLL_END:
+      {
+        gdouble x, y;
+        gdouble distance, t;
 
-  value = gtk_adjustment_get_value (range->priv->adjustment);
+        /* Vary scrolling speed from slow (ie step) to fast (2 * page),
+         * based on the distance of the pointer from the widget. We start
+         * speeding up if the pointer moves at least 20 pixels away, and
+         * we reach maximum speed when it is 220 pixels away.
+         */
+        if (!gtk_gesture_drag_get_offset (GTK_GESTURE_DRAG (priv->drag_gesture), &x, &y))
+          {
+            x = 0.0;
+            y = 0.0;
+          }
+        if (gtk_orientable_get_orientation (GTK_ORIENTABLE (range)) == GTK_ORIENTATION_HORIZONTAL)
+          distance = fabs (y);
+        else
+          distance = fabs (x);
+        distance = CLAMP (distance - 20, 0.0, 200);
+        t = distance / 100.0;
+        step = (1 - t) * step + t * page;
+        if (priv->autoscroll_mode == GTK_SCROLL_END)
+          increment = step / AUTOSCROLL_FACTOR;
+        else
+          increment = - step / AUTOSCROLL_FACTOR;
+      }
+      break;
+    default:
+      g_assert_not_reached ();
+      break;
+    }
+
+  value = gtk_adjustment_get_value (adj);
   value += increment;
-  g_signal_emit (range, signals[CHANGE_VALUE], 0, GTK_SCROLL_JUMP, value,
-                 &handled);
+
+  g_signal_emit (range, signals[CHANGE_VALUE], 0, GTK_SCROLL_JUMP, value, &handled);
 
   return G_SOURCE_CONTINUE;
 }
@@ -2739,14 +2815,12 @@ add_autoscroll (GtkRange *range)
 {
   GtkRangePrivate *priv = range->priv;
 
-  if (priv->autoscroll_id != 0
-      || priv->autoscroll_mode == GTK_SCROLL_NONE)
+  if (priv->autoscroll_id != 0 ||
+      priv->autoscroll_mode == GTK_SCROLL_NONE)
     return;
 
   priv->autoscroll_id = gtk_widget_add_tick_callback (GTK_WIDGET (range),
-                                                      autoscroll_cb,
-                                                      range,
-                                                      NULL);
+                                                      autoscroll_cb, range, NULL);
 }
 
 static void
@@ -2775,10 +2849,11 @@ _gtk_range_get_wheel_delta (GtkRange       *range,
   GtkRangePrivate *priv = range->priv;
   GtkAdjustment *adjustment = priv->adjustment;
   gdouble dx, dy;
-  gdouble delta;
+  gdouble delta = 0;
   gdouble page_size;
   gdouble page_increment;
   gdouble scroll_unit;
+  GdkScrollDirection direction;
 
   page_size = gtk_adjustment_get_page_size (adjustment);
   page_increment = gtk_adjustment_get_page_increment (adjustment);
@@ -2794,16 +2869,15 @@ _gtk_range_get_wheel_delta (GtkRange       *range,
       scroll_unit = 1;
 #endif
 
-      if (dx != 0 &&
-          gtk_orientable_get_orientation (GTK_ORIENTABLE (range)) == GTK_ORIENTATION_HORIZONTAL)
-        delta = dx * scroll_unit;
+      if (gtk_orientable_get_orientation (GTK_ORIENTABLE (range)) == GTK_ORIENTATION_HORIZONTAL)
+        delta = - (dx ? dx : dy) * scroll_unit;
       else
         delta = dy * scroll_unit;
     }
-  else
+  else if (gdk_event_get_scroll_direction ((GdkEvent *) event, &direction))
     {
-      if (event->direction == GDK_SCROLL_UP ||
-          event->direction == GDK_SCROLL_LEFT)
+      if (direction == GDK_SCROLL_UP ||
+          direction == GDK_SCROLL_LEFT)
         delta = - scroll_unit;
       else
         delta = scroll_unit;
@@ -2883,15 +2957,17 @@ gtk_range_drag_gesture_update (GtkGestureDrag *gesture,
   GtkRangePrivate *priv = range->priv;
   gdouble start_x, start_y;
 
-  gtk_gesture_drag_get_start_point (gesture, &start_x, &start_y);
-  priv->mouse_x = start_x + offset_x;
-  priv->mouse_y = start_y + offset_y;
-  priv->in_drag = TRUE;
+  if (range->priv->grab_location == MOUSE_SLIDER)
+    {
+      gtk_gesture_drag_get_start_point (gesture, &start_x, &start_y);
+      priv->mouse_x = start_x + offset_x;
+      priv->mouse_y = start_y + offset_y;
+      priv->in_drag = TRUE;
+      update_autoscroll_mode (range);
 
-  update_autoscroll_mode (range);
-
-  if (priv->autoscroll_mode == GTK_SCROLL_NONE)
-    update_slider_position (range, priv->mouse_x, priv->mouse_y);
+      if (priv->autoscroll_mode == GTK_SCROLL_NONE)
+        update_slider_position (range, priv->mouse_x, priv->mouse_y);
+    }
 }
 
 static void
@@ -2910,8 +2986,11 @@ gtk_range_drag_gesture_end (GtkGestureDrag       *gesture,
                             gdouble               offset_y,
                             GtkRange             *range)
 {
-  range->priv->in_drag = FALSE;
-  stop_scrolling (range);
+  if (range->priv->grab_location == MOUSE_SLIDER)
+    {
+      range->priv->in_drag = FALSE;
+      stop_scrolling (range);
+    }
 }
 
 static gboolean
@@ -4010,11 +4089,11 @@ gtk_range_real_change_value (GtkRange      *range,
       power = 1;
       while (i--)
         power *= 10;
-      
+
       value = floor ((value * power) + 0.5) / power;
     }
 
-  if (priv->in_drag)
+  if (priv->in_drag || priv->autoscroll_id)
     gtk_adjustment_set_value (priv->adjustment, value);
   else
     gtk_adjustment_animate_to_value (priv->adjustment, value);
@@ -4158,7 +4237,7 @@ gtk_range_set_round_digits (GtkRange *range,
   if (range->priv->round_digits != round_digits)
     {
       range->priv->round_digits = round_digits;
-      g_object_notify (G_OBJECT (range), "round-digits");
+      g_object_notify_by_pspec (G_OBJECT (range), properties[PROP_ROUND_DIGITS]);
     }
 }
 

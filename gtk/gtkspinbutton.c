@@ -263,11 +263,6 @@ static void gtk_spin_button_get_text_area_size (GtkEntry *entry,
                                                 gint     *y,
                                                 gint     *width,
                                                 gint     *height);
-static void gtk_spin_button_get_frame_size (GtkEntry *entry,
-                                            gint     *x,
-                                            gint     *y,
-                                            gint     *width,
-                                            gint     *height);
 static void gtk_spin_button_unset_adjustment (GtkSpinButton *spin_button);
 static void gtk_spin_button_set_orientation (GtkSpinButton     *spin_button,
                                              GtkOrientation     orientation);
@@ -335,7 +330,6 @@ gtk_spin_button_class_init (GtkSpinButtonClass *class)
 
   entry_class->activate = gtk_spin_button_activate;
   entry_class->get_text_area_size = gtk_spin_button_get_text_area_size;
-  entry_class->get_frame_size = gtk_spin_button_get_frame_size;
 
   class->input = NULL;
   class->output = NULL;
@@ -547,6 +541,8 @@ gtk_spin_button_class_init (GtkSpinButtonClass *class)
   add_spin_binding (binding_set, GDK_KEY_KP_Down, 0, GTK_SCROLL_STEP_DOWN);
   add_spin_binding (binding_set, GDK_KEY_Page_Up, 0, GTK_SCROLL_PAGE_UP);
   add_spin_binding (binding_set, GDK_KEY_Page_Down, 0, GTK_SCROLL_PAGE_DOWN);
+  add_spin_binding (binding_set, GDK_KEY_End, 0, GTK_SCROLL_END);
+  add_spin_binding (binding_set, GDK_KEY_Home, 0, GTK_SCROLL_START);
   add_spin_binding (binding_set, GDK_KEY_Page_Up, GDK_CONTROL_MASK, GTK_SCROLL_END);
   add_spin_binding (binding_set, GDK_KEY_Page_Down, GDK_CONTROL_MASK, GTK_SCROLL_START);
 
@@ -1097,9 +1093,9 @@ gtk_spin_button_realize (GtkWidget *widget)
   attributes.wclass = GDK_INPUT_ONLY;
   attributes.visual = gtk_widget_get_visual (widget);
   attributes.event_mask = gtk_widget_get_events (widget);
-  attributes.event_mask |= GDK_EXPOSURE_MASK | GDK_BUTTON_PRESS_MASK
+  attributes.event_mask |= GDK_BUTTON_PRESS_MASK
     | GDK_BUTTON_RELEASE_MASK | GDK_LEAVE_NOTIFY_MASK | GDK_ENTER_NOTIFY_MASK
-    | GDK_POINTER_MOTION_MASK | GDK_POINTER_MOTION_HINT_MASK;
+    | GDK_POINTER_MOTION_MASK;
 
   attributes_mask = GDK_WA_X | GDK_WA_Y | GDK_WA_VISUAL;
 
@@ -1859,32 +1855,6 @@ gtk_spin_button_activate (GtkEntry *entry)
 }
 
 static void
-gtk_spin_button_get_frame_size (GtkEntry *entry,
-                                gint     *x,
-                                gint     *y,
-                                gint     *width,
-                                gint     *height)
-{
-  GtkSpinButtonPrivate *priv = GTK_SPIN_BUTTON (entry)->priv;
-  gint up_panel_width, up_panel_height;
-  gint down_panel_width, down_panel_height;
-
-  gtk_spin_button_panel_get_size (GTK_SPIN_BUTTON (entry), priv->up_panel, &up_panel_width, &up_panel_height);
-  gtk_spin_button_panel_get_size (GTK_SPIN_BUTTON (entry), priv->down_panel, &down_panel_width, &down_panel_height);
-
-  GTK_ENTRY_CLASS (gtk_spin_button_parent_class)->get_frame_size (entry, x, y, width, height);
-
-  if (priv->orientation == GTK_ORIENTATION_VERTICAL)
-    {
-      if (y)
-        *y += up_panel_height;
-
-      if (height)
-        *height -= up_panel_height + down_panel_height;
-    }
-}
-
-static void
 gtk_spin_button_get_text_area_size (GtkEntry *entry,
                                     gint     *x,
                                     gint     *y,
@@ -1895,13 +1865,13 @@ gtk_spin_button_get_text_area_size (GtkEntry *entry,
   gint up_panel_width, up_panel_height;
   gint down_panel_width, down_panel_height;
 
-  gtk_spin_button_panel_get_size (GTK_SPIN_BUTTON (entry), priv->up_panel, &up_panel_width, &up_panel_height);
-  gtk_spin_button_panel_get_size (GTK_SPIN_BUTTON (entry), priv->down_panel, &down_panel_width, &down_panel_height);
-
   GTK_ENTRY_CLASS (gtk_spin_button_parent_class)->get_text_area_size (entry, x, y, width, height);
 
   if (priv->orientation == GTK_ORIENTATION_HORIZONTAL)
     {
+      gtk_spin_button_panel_get_size (GTK_SPIN_BUTTON (entry), priv->up_panel, &up_panel_width, &up_panel_height);
+      gtk_spin_button_panel_get_size (GTK_SPIN_BUTTON (entry), priv->down_panel, &down_panel_width, &down_panel_height);
+
       if (gtk_widget_get_direction (GTK_WIDGET (entry)) == GTK_TEXT_DIR_RTL)
         {
           if (x)
@@ -1910,14 +1880,6 @@ gtk_spin_button_get_text_area_size (GtkEntry *entry,
 
       if (width)
         *width -= up_panel_width + down_panel_width;
-    }
-  else
-    {
-      if (y)
-        *y += up_panel_height;
-
-      if (height)
-        *height -= up_panel_height + down_panel_height;
     }
 }
 
@@ -2143,6 +2105,7 @@ gtk_spin_button_configure (GtkSpinButton *spin_button,
     adjustment = priv->adjustment;
 
   g_object_freeze_notify (G_OBJECT (spin_button));
+
   if (priv->adjustment != adjustment)
     {
       gtk_spin_button_unset_adjustment (spin_button);
@@ -2172,9 +2135,10 @@ gtk_spin_button_configure (GtkSpinButton *spin_button,
       priv->climb_rate = climb_rate;
       g_object_notify (G_OBJECT (spin_button), "climb-rate");
     }
+
   g_object_thaw_notify (G_OBJECT (spin_button));
 
-  gtk_adjustment_value_changed (adjustment);
+  gtk_spin_button_value_changed (adjustment, spin_button);
 }
 
 /**

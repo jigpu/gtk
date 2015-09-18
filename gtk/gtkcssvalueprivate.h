@@ -35,7 +35,7 @@ typedef struct _GtkCssValueClass      GtkCssValueClass;
 /* using define instead of struct here so compilers get the packing right */
 #define GTK_CSS_VALUE_BASE \
   const GtkCssValueClass *class; \
-  volatile gint ref_count;
+  gint ref_count;
 
 struct _GtkCssValueClass {
   void          (* free)                              (GtkCssValue                *value);
@@ -43,10 +43,8 @@ struct _GtkCssValueClass {
   GtkCssValue * (* compute)                           (GtkCssValue                *value,
                                                        guint                       property_id,
                                                        GtkStyleProviderPrivate    *provider,
-						       int                         scale,
-                                                       GtkCssComputedValues       *values,
-                                                       GtkCssComputedValues       *parent_values,
-                                                       GtkCssDependencies         *dependencies);
+                                                       GtkCssStyle                *style,
+                                                       GtkCssStyle                *parent_style);
   gboolean      (* equal)                             (const GtkCssValue          *value1,
                                                        const GtkCssValue          *value2);
   GtkCssValue * (* transition)                        (GtkCssValue                *start,
@@ -69,10 +67,8 @@ void         _gtk_css_value_unref                     (GtkCssValue              
 GtkCssValue *_gtk_css_value_compute                   (GtkCssValue                *value,
                                                        guint                       property_id,
                                                        GtkStyleProviderPrivate    *provider,
-						       int                         scale,
-                                                       GtkCssComputedValues       *values,
-                                                       GtkCssComputedValues       *parent_values,
-                                                       GtkCssDependencies         *dependencies);
+                                                       GtkCssStyle                *style,
+                                                       GtkCssStyle                *parent_style);
 gboolean     _gtk_css_value_equal                     (const GtkCssValue          *value1,
                                                        const GtkCssValue          *value2);
 gboolean     _gtk_css_value_equal0                    (const GtkCssValue          *value1,

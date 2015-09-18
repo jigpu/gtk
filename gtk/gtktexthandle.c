@@ -29,6 +29,7 @@ typedef struct _GtkTextHandlePrivate GtkTextHandlePrivate;
 typedef struct _HandleWindow HandleWindow;
 
 enum {
+  DRAG_STARTED,
   HANDLE_DRAGGED,
   DRAG_FINISHED,
   LAST_SIGNAL
@@ -43,8 +44,10 @@ struct _HandleWindow
 {
   GtkWidget *widget;
   GdkRectangle pointing_to;
+  GtkBorder border;
   gint dx;
   gint dy;
+  GtkTextDirection dir;
   guint dragged : 1;
   guint mode_visible : 1;
   guint user_visible : 1;
@@ -97,19 +100,19 @@ _gtk_text_handle_draw (GtkTextHandle         *handle,
                        GtkTextHandlePosition  pos)
 {
   GtkTextHandlePrivate *priv;
+  HandleWindow *handle_window;
   GtkStyleContext *context;
   gint width, height;
 
   priv = handle->priv;
-  context = gtk_widget_get_style_context (priv->windows[pos].widget);
+  handle_window = &priv->windows[pos];
+
+  context = gtk_widget_get_style_context (handle_window->widget);
   _gtk_text_handle_get_size (handle, &width, &height);
 
   cairo_save (cr);
 
-  if (pos == GTK_TEXT_HANDLE_POSITION_SELECTION_END)
-    cairo_translate (cr, width, priv->windows[pos].pointing_to.height);
-  else
-    cairo_translate (cr, width, height);
+  cairo_translate (cr, handle_window->border.left, handle_window->border.top);
 
   gtk_style_context_save (context);
   gtk_style_context_add_class (context,
@@ -128,8 +131,6 @@ _gtk_text_handle_draw (GtkTextHandle         *handle,
     gtk_style_context_add_class (context,
                                  GTK_STYLE_CLASS_TOP);
 
-  gtk_render_background (context, cr, 0, 0, width, height);
-  gtk_render_frame (context, cr, 0, 0, width, height);
   gtk_render_handle (context, cr, 0, 0, width, height);
 
   gtk_style_context_restore (context);
@@ -162,27 +163,42 @@ gtk_text_handle_widget_draw (GtkWidget     *widget,
   if (pos < 0)
     return FALSE;
 
+#if 0
+  /* Show the invisible border */
+  cairo_set_source_rgba (cr, 1, 0, 0, 0.5);
+  cairo_paint (cr);
+#endif
+
   _gtk_text_handle_draw (handle, cr, pos);
   return TRUE;
 }
 
 static void
 gtk_text_handle_set_state (GtkTextHandle *handle,
+                           gint           pos,
                            GtkStateFlags  state)
 {
-  GtkTextHandlePrivate *priv;
-  gint i;
+  GtkTextHandlePrivate *priv = handle->priv;
 
-  priv = handle->priv;
+  if (!priv->windows[pos].widget)
+    return;
 
-  for (i = 0; i <= GTK_TEXT_HANDLE_POSITION_SELECTION_START; i++)
-    {
-      if (!priv->windows[i].widget)
-        continue;
+  gtk_widget_set_state_flags (priv->windows[pos].widget, state, FALSE);
+  gtk_widget_queue_draw (priv->windows[pos].widget);
+}
 
-      gtk_widget_set_state_flags (priv->windows[i].widget, state, TRUE);
-      gtk_widget_queue_draw (priv->windows[i].widget);
-    }
+static void
+gtk_text_handle_unset_state (GtkTextHandle *handle,
+                             gint           pos,
+                             GtkStateFlags  state)
+{
+  GtkTextHandlePrivate *priv = handle->priv;
+
+  if (!priv->windows[pos].widget)
+    return;
+
+  gtk_widget_unset_state_flags (priv->windows[pos].widget, state);
+  gtk_widget_queue_draw (priv->windows[pos].widget);
 }
 
 static gboolean
@@ -204,32 +220,38 @@ gtk_text_handle_widget_event (GtkWidget     *widget,
       priv->windows[pos].dx = event->button.x;
       priv->windows[pos].dy = event->button.y;
       priv->windows[pos].dragged = TRUE;
-      gtk_text_handle_set_state (handle, GTK_STATE_FLAG_ACTIVE);
+      gtk_text_handle_set_state (handle, pos, GTK_STATE_FLAG_ACTIVE);
+      g_signal_emit (handle, signals[DRAG_STARTED], 0, pos);
     }
   else if (event->type == GDK_BUTTON_RELEASE)
     {
       g_signal_emit (handle, signals[DRAG_FINISHED], 0, pos);
       priv->windows[pos].dragged = FALSE;
-      gtk_text_handle_set_state (handle, GTK_STATE_FLAG_NORMAL);
+      gtk_text_handle_unset_state (handle, pos, GTK_STATE_FLAG_ACTIVE);
+    }
+  else if (event->type == GDK_ENTER_NOTIFY)
+    gtk_text_handle_set_state (handle, pos, GTK_STATE_FLAG_PRELIGHT);
+  else if (event->type == GDK_LEAVE_NOTIFY)
+    {
+      if (!priv->windows[pos].dragged &&
+          (event->crossing.mode == GDK_CROSSING_NORMAL ||
+           event->crossing.mode == GDK_CROSSING_UNGRAB))
+        gtk_text_handle_unset_state (handle, pos, GTK_STATE_FLAG_PRELIGHT);
     }
   else if (event->type == GDK_MOTION_NOTIFY &&
            event->motion.state & GDK_BUTTON1_MASK &&
            priv->windows[pos].dragged)
     {
-      gint x, y, width, height, handle_height;
+      gint x, y, width, handle_height;
       GtkAllocation allocation;
 
       gtk_widget_get_allocation (priv->windows[pos].widget, &allocation);
       width = allocation.width;
-      height = allocation.height;
       _gtk_text_handle_get_size (handle, NULL, &handle_height);
+
       x = event->motion.x - priv->windows[pos].dx + (width / 2);
-      y = event->motion.y - priv->windows[pos].dy;
-
-      if (pos != GTK_TEXT_HANDLE_POSITION_CURSOR)
-        y += height - handle_height;
-
-      y += priv->windows[pos].pointing_to.height / 2;
+      y = event->motion.y - priv->windows[pos].dy +
+        priv->windows[pos].pointing_to.height / 2;
 
       gtk_widget_translate_coordinates (widget, priv->parent, x, y, &x, &y);
       g_signal_emit (handle, signals[HANDLE_DRAGGED], 0, pos, x, y);
@@ -265,10 +287,15 @@ _gtk_text_handle_ensure_widget (GtkTextHandle         *handle,
       GtkWidget *widget, *window;
 
       widget = gtk_event_box_new ();
+      gtk_event_box_set_visible_window (GTK_EVENT_BOX (widget), TRUE);
       gtk_widget_set_events (widget,
                              GDK_BUTTON_PRESS_MASK |
                              GDK_BUTTON_RELEASE_MASK |
+                             GDK_ENTER_NOTIFY_MASK |
+                             GDK_LEAVE_NOTIFY_MASK |
                              GDK_POINTER_MOTION_MASK);
+
+      gtk_widget_set_direction (widget, priv->windows[pos].dir);
 
       g_signal_connect (widget, "draw",
                         G_CALLBACK (gtk_text_handle_widget_draw), handle);
@@ -280,7 +307,7 @@ _gtk_text_handle_ensure_widget (GtkTextHandle         *handle,
 
       priv->windows[pos].widget = g_object_ref_sink (widget);
       window = gtk_widget_get_ancestor (priv->parent, GTK_TYPE_WINDOW);
-      _gtk_window_add_popover (GTK_WINDOW (window), widget);
+      _gtk_window_add_popover (GTK_WINDOW (window), widget, priv->parent, FALSE);
 
       gtk_style_context_set_parent (gtk_widget_get_style_context (widget),
                                     gtk_widget_get_style_context (priv->parent));
@@ -329,9 +356,11 @@ _gtk_text_handle_update (GtkTextHandle         *handle,
 {
   GtkTextHandlePrivate *priv;
   HandleWindow *handle_window;
+  GtkBorder *border;
 
   priv = handle->priv;
   handle_window = &priv->windows[pos];
+  border = &handle_window->border;
 
   if (!priv->parent || !gtk_widget_is_drawable (priv->parent))
     return;
@@ -340,9 +369,10 @@ _gtk_text_handle_update (GtkTextHandle         *handle,
       handle_window->mode_visible && handle_window->user_visible)
     {
       cairo_rectangle_int_t rect;
-      GtkPositionType handle_pos;
       gint width, height;
       GtkWidget *window;
+      GtkAllocation alloc;
+      gint w, h;
 
       _gtk_text_handle_ensure_widget (handle, pos);
       _gtk_text_handle_get_size (handle, &width, &height);
@@ -351,12 +381,8 @@ _gtk_text_handle_update (GtkTextHandle         *handle,
       rect.width = width;
       rect.height = 0;
 
-      /* Make the window 3 times as wide, and 2 times as high (plus
-       * handle_window->pointing_to.height), the handle will be rendered
-       * in the center. Making the rest an invisible input area.
-       */
-      width *= 3;
-      height *= 2;
+      border->left = width;
+      border->right = width;
 
       _handle_update_child_visible (handle, pos);
 
@@ -364,22 +390,47 @@ _gtk_text_handle_update (GtkTextHandle         *handle,
       gtk_widget_translate_coordinates (priv->parent, window,
                                         rect.x, rect.y, &rect.x, &rect.y);
 
-      if (pos == GTK_TEXT_HANDLE_POSITION_CURSOR)
-        handle_pos = GTK_POS_BOTTOM;
-      else
-        {
-          handle_pos = GTK_POS_TOP;
-          rect.y += handle_window->pointing_to.height;
-        }
+      if (pos == GTK_TEXT_HANDLE_POSITION_CURSOR &&
+          priv->mode == GTK_TEXT_HANDLE_MODE_CURSOR)
+        rect.x -= rect.width / 2;
+      else if ((pos == GTK_TEXT_HANDLE_POSITION_CURSOR &&
+                handle_window->dir == GTK_TEXT_DIR_RTL) ||
+               (pos == GTK_TEXT_HANDLE_POSITION_SELECTION_START &&
+                handle_window->dir != GTK_TEXT_DIR_RTL))
+        rect.x -= rect.width;
 
-      height += handle_window->pointing_to.height;
-      rect.x -= rect.width / 2;
+      border->top = height;
+      border->bottom = handle_window->pointing_to.height;
+
+      /* The goal is to make the window 3 times as wide and high. The handle
+       * will be rendered in the center, making the rest an invisible border.
+       * If we hit the edge of the toplevel, we shrink the border to avoid
+       * mispositioning the handle, if at all possible. This calculation uses
+       * knowledge about how popover_get_rect() works.
+       */
+
+      gtk_widget_get_allocation (window, &alloc);
+
+      w = width + border->left + border->right;
+      h = height + border->top + border->bottom;
+
+      if (rect.x + rect.width/2 - w/2 < alloc.x)
+        border->left = MAX (0, border->left - (alloc.x - (rect.x + rect.width/2 - w/2)));
+      if (rect.y + rect.height/2 - h/2 < alloc.y)
+        border->top = MAX (0, border->top - (alloc.y - (rect.y + rect.height/2 - h/2)));
+      if (rect.x + rect.width/2 + w/2 > alloc.x + alloc.width)
+        border->right = MAX (0, border->right - (rect.x + rect.width/2 + w/2 - (alloc.x + alloc.width)));
+      if (rect.y + rect.height/2 + h/2 > alloc.y + alloc.height)
+        border->bottom = MAX (0, border->bottom - (rect.y + rect.height/2 + h/2 - (alloc.y + alloc.height)));
+
+      width += border->left + border->right;
+      height += border->top + border->bottom;
 
       gtk_widget_set_size_request (handle_window->widget, width, height);
       gtk_widget_show (handle_window->widget);
       _gtk_window_set_popover_position (GTK_WINDOW (window),
                                         handle_window->widget,
-                                        handle_pos, &rect);
+                                        GTK_POS_BOTTOM, &rect);
     }
   else if (handle_window->widget)
     gtk_widget_hide (handle_window->widget);
@@ -627,6 +678,14 @@ _gtk_text_handle_class_init (GtkTextHandleClass *klass)
 		  G_TYPE_NONE, 3,
                   GTK_TYPE_TEXT_HANDLE_POSITION,
                   G_TYPE_INT, G_TYPE_INT);
+  signals[DRAG_STARTED] =
+    g_signal_new (I_("drag-started"),
+		  G_OBJECT_CLASS_TYPE (object_class),
+		  G_SIGNAL_RUN_LAST, 0,
+		  NULL, NULL,
+                  g_cclosure_marshal_VOID__ENUM,
+                  G_TYPE_NONE, 1,
+                  GTK_TYPE_TEXT_HANDLE_POSITION);
   signals[DRAG_FINISHED] =
     g_signal_new (I_("drag-finished"),
 		  G_OBJECT_CLASS_TYPE (object_class),
@@ -766,4 +825,25 @@ _gtk_text_handle_get_is_dragged (GtkTextHandle         *handle,
                GTK_TEXT_HANDLE_POSITION_SELECTION_START);
 
   return priv->windows[pos].dragged;
+}
+
+void
+_gtk_text_handle_set_direction (GtkTextHandle         *handle,
+                                GtkTextHandlePosition  pos,
+                                GtkTextDirection       dir)
+{
+  GtkTextHandlePrivate *priv;
+
+  g_return_if_fail (GTK_IS_TEXT_HANDLE (handle));
+
+  priv = handle->priv;
+  pos = CLAMP (pos, GTK_TEXT_HANDLE_POSITION_CURSOR,
+               GTK_TEXT_HANDLE_POSITION_SELECTION_START);
+  priv->windows[pos].dir = dir;
+
+  if (priv->windows[pos].widget)
+    {
+      gtk_widget_set_direction (priv->windows[pos].widget, dir);
+      _gtk_text_handle_update (handle, pos);
+    }
 }

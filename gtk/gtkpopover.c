@@ -76,7 +76,6 @@
 
 #include "config.h"
 #include <gdk/gdk.h>
-#include <cairo-gobject.h>
 #include "gtkpopover.h"
 #include "gtkpopoverprivate.h"
 #include "gtktypebuiltins.h"
@@ -103,8 +102,10 @@
 #include "wayland/gdkwayland.h"
 #endif
 
-#define TAIL_GAP_WIDTH 24
-#define TAIL_HEIGHT    12
+#define TAIL_GAP_WIDTH  24
+#define TAIL_HEIGHT     12
+#define TRANSITION_DIFF 20
+#define TRANSITION_DURATION 330 * 1000
 
 #define POS_IS_VERTICAL(p) ((p) == GTK_POS_TOP || (p) == GTK_POS_BOTTOM)
 
@@ -112,7 +113,8 @@ enum {
   PROP_RELATIVE_TO = 1,
   PROP_POINTING_TO,
   PROP_POSITION,
-  PROP_MODAL
+  PROP_MODAL,
+  PROP_TRANSITIONS_ENABLED
 };
 
 enum {
@@ -120,11 +122,20 @@ enum {
   N_SIGNALS
 };
 
+enum {
+  STATE_SHOWING,
+  STATE_SHOWN,
+  STATE_HIDING,
+  STATE_HIDDEN
+};
+
 struct _GtkPopoverPrivate
 {
   GtkWidget *widget;
   GtkWindow *window;
   GtkWidget *prev_focus_widget;
+  GtkWidget *default_widget;
+  GtkWidget *prev_default;
   GtkScrollable *parent_scrollable;
   GtkAdjustment *vadj;
   GtkAdjustment *hadj;
@@ -144,6 +155,12 @@ struct _GtkPopoverPrivate
   guint button_pressed     : 1;
   guint apply_shape        : 1;
   guint grab_notify_blocked : 1;
+  guint transitions_enabled : 1;
+  guint state               : 2;
+  guint visible             : 1;
+  gint64 start_time;
+  gint transition_diff;
+  guint tick_id;
 };
 
 static GQuark quark_widget_popovers = 0;
@@ -151,6 +168,8 @@ static guint signals[N_SIGNALS] = { 0 };
 
 static void gtk_popover_update_relative_to (GtkPopover *popover,
                                             GtkWidget  *relative_to);
+static void gtk_popover_set_state          (GtkPopover *popover,
+                                            guint       state);
 
 G_DEFINE_TYPE_WITH_PRIVATE (GtkPopover, gtk_popover, GTK_TYPE_BIN)
 
@@ -165,6 +184,8 @@ gtk_popover_init (GtkPopover *popover)
   popover->priv = gtk_popover_get_instance_private (popover);
   popover->priv->modal = TRUE;
   popover->priv->apply_shape = TRUE;
+  popover->priv->tick_id = 0;
+  popover->priv->transitions_enabled = TRUE;
 
   context = gtk_widget_get_style_context (widget);
   gtk_style_context_add_class (context, GTK_STYLE_CLASS_BACKGROUND);
@@ -195,6 +216,10 @@ gtk_popover_set_property (GObject      *object,
       gtk_popover_set_modal (GTK_POPOVER (object),
                              g_value_get_boolean (value));
       break;
+    case PROP_TRANSITIONS_ENABLED:
+      gtk_popover_set_transitions_enabled (GTK_POPOVER (object),
+                                           g_value_get_boolean (value));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
@@ -222,9 +247,25 @@ gtk_popover_get_property (GObject    *object,
     case PROP_MODAL:
       g_value_set_boolean (value, priv->modal);
       break;
+    case PROP_TRANSITIONS_ENABLED:
+      g_value_set_boolean (value, priv->transitions_enabled);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
     }
+}
+
+static gboolean
+transitions_enabled (GtkPopover *popover)
+{
+  GtkPopoverPrivate *priv = popover->priv;
+  gboolean animations_enabled;
+
+  g_object_get (gtk_widget_get_settings (GTK_WIDGET (popover)),
+                "gtk-enable-animations", &animations_enabled,
+                NULL);
+
+  return animations_enabled && priv->transitions_enabled;
 }
 
 static void
@@ -263,10 +304,11 @@ gtk_popover_dispose (GObject *object)
   GtkPopover *popover = GTK_POPOVER (object);
   GtkPopoverPrivate *priv = popover->priv;
 
-  gtk_widget_set_visible (GTK_WIDGET (object), FALSE);
-
   if (priv->window)
-    _gtk_window_remove_popover (priv->window, GTK_WIDGET (object));
+    {
+      g_signal_handlers_disconnect_by_data (priv->window, popover);
+      _gtk_window_remove_popover (priv->window, GTK_WIDGET (object));
+    }
 
   priv->window = NULL;
 
@@ -274,6 +316,8 @@ gtk_popover_dispose (GObject *object)
     gtk_popover_update_relative_to (popover, NULL);
 
   popover_unset_prev_focus (popover);
+
+  g_clear_object (&priv->default_widget);
 
   G_OBJECT_CLASS (gtk_popover_parent_class)->dispose (object);
 }
@@ -301,7 +345,6 @@ gtk_popover_realize (GtkWidget *widget)
     GDK_BUTTON_MOTION_MASK |
     GDK_BUTTON_PRESS_MASK |
     GDK_BUTTON_RELEASE_MASK |
-    GDK_EXPOSURE_MASK |
     GDK_ENTER_NOTIFY_MASK |
     GDK_LEAVE_NOTIFY_MASK;
 
@@ -369,7 +412,14 @@ window_set_focus (GtkWindow  *window,
   if (priv->modal && widget &&
       gtk_widget_is_drawable (GTK_WIDGET (popover)) &&
       !gtk_widget_is_ancestor (widget, GTK_WIDGET (popover)))
-    gtk_widget_hide (GTK_WIDGET (popover));
+    {
+      GtkWidget *grab_widget;
+
+      grab_widget = gtk_grab_get_current ();
+
+      if (!grab_widget || !GTK_IS_POPOVER (grab_widget))
+        gtk_widget_hide (GTK_WIDGET (popover));
+    }
 }
 
 static void
@@ -421,10 +471,116 @@ gtk_popover_apply_modality (GtkPopover *popover,
       if (priv->prev_focus_widget &&
           gtk_widget_is_drawable (priv->prev_focus_widget))
         gtk_widget_grab_focus (priv->prev_focus_widget);
-      else
+      else if (priv->window)
         gtk_widget_grab_focus (GTK_WIDGET (priv->window));
 
       popover_unset_prev_focus (popover);
+    }
+}
+
+/* From clutter-easing.c, based on Robert Penner's
+ * infamous easing equations, MIT license.
+ */
+static double
+ease_out_cubic (double t)
+{
+  double p = t - 1;
+
+  return p * p * p + 1;
+}
+
+static gboolean
+show_animate_cb (GtkWidget     *widget,
+                 GdkFrameClock *frame_clock,
+                 gpointer       user_data)
+{
+  GtkPopover *popover = GTK_POPOVER (widget);
+  GtkPopoverPrivate *priv = gtk_popover_get_instance_private (popover);
+  gint64 now = gdk_frame_clock_get_frame_time (frame_clock);
+  gdouble t;
+
+  if (now < (priv->start_time + TRANSITION_DURATION))
+    t = (now - priv->start_time) / (gdouble) (TRANSITION_DURATION);
+  else
+    t = 1.0;
+
+  t = ease_out_cubic (t);
+
+  if (priv->state == STATE_SHOWING)
+    {
+      priv->transition_diff = TRANSITION_DIFF - (TRANSITION_DIFF * t);
+      gtk_widget_set_opacity (widget, t);
+    }
+  else if (priv->state == STATE_HIDING)
+    {
+      priv->transition_diff = -TRANSITION_DIFF * t;
+      gtk_widget_set_opacity (widget, 1.0 - t);
+    }
+
+  gtk_widget_queue_resize (GTK_WIDGET (popover));
+
+  if (t >= 1.0)
+    {
+      if (priv->state == STATE_SHOWING)
+        {
+          gtk_popover_set_state (popover, STATE_SHOWN);
+
+          if (!priv->visible)
+            gtk_popover_set_state (popover, STATE_HIDING);
+        }
+      else
+        gtk_popover_set_state (popover, STATE_HIDDEN);
+
+      return FALSE;
+    }
+  else
+    return TRUE;
+}
+
+static void
+gtk_popover_start_transition (GtkPopover *popover)
+{
+  GtkPopoverPrivate *priv = popover->priv;
+  GdkFrameClock *clock;
+
+  if (priv->tick_id != 0)
+    return;
+
+  clock = gtk_widget_get_frame_clock (GTK_WIDGET (popover));
+  priv->start_time = gdk_frame_clock_get_frame_time (clock);
+  priv->tick_id = gtk_widget_add_tick_callback (GTK_WIDGET (popover),
+                                                show_animate_cb,
+                                                popover, NULL);
+}
+
+static void
+gtk_popover_set_state (GtkPopover *popover,
+                       guint       state)
+{
+  GtkPopoverPrivate *priv = popover->priv;
+
+  if (!transitions_enabled (popover) ||
+      !gtk_widget_get_realized (GTK_WIDGET (popover)))
+    {
+      if (state == STATE_SHOWING)
+        state = STATE_SHOWN;
+      else if (state == STATE_HIDING)
+        state = STATE_HIDDEN;
+    }
+
+  priv->state = state;
+
+  if (state == STATE_SHOWING || state == STATE_HIDING)
+    gtk_popover_start_transition (popover);
+  else
+    {
+      if (priv->tick_id)
+        {
+          gtk_widget_remove_tick_callback (GTK_WIDGET (popover), priv->tick_id);
+          priv->tick_id = 0;
+        }
+
+      gtk_widget_set_visible (GTK_WIDGET (popover), state == STATE_SHOWN);
     }
 }
 
@@ -433,13 +589,16 @@ gtk_popover_map (GtkWidget *widget)
 {
   GtkPopoverPrivate *priv = GTK_POPOVER (widget)->priv;
 
+  priv->prev_default = gtk_window_get_default_widget (priv->window);
+  if (priv->prev_default)
+    g_object_ref (priv->prev_default);
+
   GTK_WIDGET_CLASS (gtk_popover_parent_class)->map (widget);
 
   gdk_window_show (gtk_widget_get_window (widget));
   gtk_popover_update_position (GTK_POPOVER (widget));
 
-  if (priv->modal)
-    gtk_popover_apply_modality (GTK_POPOVER (widget), TRUE);
+  gtk_window_set_default (priv->window, priv->default_widget);
 }
 
 static void
@@ -449,13 +608,12 @@ gtk_popover_unmap (GtkWidget *widget)
 
   priv->button_pressed = FALSE;
 
-  if (priv->modal)
-    gtk_popover_apply_modality (GTK_POPOVER (widget), FALSE);
-
   gdk_window_hide (gtk_widget_get_window (widget));
   GTK_WIDGET_CLASS (gtk_popover_parent_class)->unmap (widget);
 
-  g_signal_emit (widget, signals[CLOSED], 0);
+  if (gtk_window_get_default_widget (priv->window) == priv->default_widget)
+    gtk_window_set_default (priv->window, priv->prev_default);
+  g_clear_object (&priv->prev_default);
 }
 
 static void
@@ -774,8 +932,8 @@ _gtk_popover_update_child_visible (GtkPopover *popover)
 
   gtk_widget_get_allocation (GTK_WIDGET (parent), &allocation);
 
-  if (rect.x < 0 || rect.x + rect.width > allocation.width ||
-      rect.y < 0 || rect.y + rect.height > allocation.height)
+  if (rect.x + rect.width < 0 || rect.x > allocation.width ||
+      rect.y + rect.height < 0 || rect.y > allocation.height)
     gtk_widget_set_child_visible (widget, FALSE);
   else
     gtk_widget_set_child_visible (widget, TRUE);
@@ -851,6 +1009,22 @@ gtk_popover_update_position (GtkPopover *popover)
             }
         }
       priv->final_position = pos;
+    }
+
+  switch (priv->final_position)
+    {
+    case GTK_POS_TOP:
+      rect.y += priv->transition_diff;
+      break;
+    case GTK_POS_BOTTOM:
+      rect.y -= priv->transition_diff;
+      break;
+    case GTK_POS_LEFT:
+      rect.x += priv->transition_diff;
+      break;
+    case GTK_POS_RIGHT:
+      rect.x -= priv->transition_diff;
+      break;
     }
 
   _gtk_window_set_popover_position (priv->window, widget,
@@ -1281,7 +1455,11 @@ gtk_popover_key_press (GtkWidget   *widget,
 static void
 gtk_popover_grab_focus (GtkWidget *widget)
 {
+  GtkPopoverPrivate *priv = GTK_POPOVER (widget)->priv;
   GtkWidget *child;
+
+  if (!priv->visible)
+    return;
 
   /* Focus the first natural child */
   child = gtk_bin_get_child (GTK_BIN (widget));
@@ -1295,6 +1473,10 @@ gtk_popover_focus (GtkWidget        *widget,
                    GtkDirectionType  direction)
 {
   GtkPopover *popover = GTK_POPOVER (widget);
+  GtkPopoverPrivate *priv = popover->priv;
+
+  if (!priv->visible)
+    return FALSE;
 
   if (!GTK_WIDGET_CLASS (gtk_popover_parent_class)->focus (widget, direction))
     {
@@ -1319,6 +1501,53 @@ gtk_popover_focus (GtkWidget        *widget,
   return TRUE;
 }
 
+static void
+gtk_popover_show (GtkWidget *widget)
+{
+  GtkPopoverPrivate *priv = GTK_POPOVER (widget)->priv;
+
+  priv->visible = TRUE;
+
+  GTK_WIDGET_CLASS (gtk_popover_parent_class)->show (widget);
+
+  if (priv->modal)
+    gtk_popover_apply_modality (GTK_POPOVER (widget), TRUE);
+
+  gtk_popover_set_state (GTK_POPOVER (widget), STATE_SHOWING);
+
+  if (gtk_widget_get_realized (widget))
+    gdk_window_input_shape_combine_region (gtk_widget_get_parent_window (widget),
+                                           NULL, 0, 0);
+}
+
+static void
+gtk_popover_hide (GtkWidget *widget)
+{
+  GtkPopoverPrivate *priv = GTK_POPOVER (widget)->priv;
+  cairo_region_t *region;
+
+  if (priv->visible)
+    {
+      priv->visible = FALSE;
+      g_signal_emit (widget, signals[CLOSED], 0);
+
+      if (priv->modal)
+        gtk_popover_apply_modality (GTK_POPOVER (widget), FALSE);
+    }
+
+  if (gtk_widget_get_realized (widget))
+    {
+      region = cairo_region_create ();
+      gdk_window_input_shape_combine_region (gtk_widget_get_parent_window (widget),
+                                             region, 0, 0);
+      cairo_region_destroy (region);
+    }
+
+  if (!priv->window || priv->state == STATE_HIDDEN)
+    GTK_WIDGET_CLASS (gtk_popover_parent_class)->hide (widget);
+  else if (priv->state != STATE_SHOWING)
+    gtk_popover_set_state (GTK_POPOVER (widget), STATE_HIDING);
+}
 
 static void
 gtk_popover_class_init (GtkPopoverClass *klass)
@@ -1345,6 +1574,8 @@ gtk_popover_class_init (GtkPopoverClass *klass)
   widget_class->key_press_event = gtk_popover_key_press;
   widget_class->grab_focus = gtk_popover_grab_focus;
   widget_class->focus = gtk_popover_focus;
+  widget_class->show = gtk_popover_show;
+  widget_class->hide = gtk_popover_hide;
 
   /**
    * GtkPopover:relative-to:
@@ -1372,7 +1603,7 @@ gtk_popover_class_init (GtkPopoverClass *klass)
                                    g_param_spec_boxed ("pointing-to",
                                                        P_("Pointing to"),
                                                        P_("Rectangle the bubble window points to"),
-                                                       CAIRO_GOBJECT_TYPE_RECTANGLE_INT,
+                                                       GDK_TYPE_RECTANGLE,
                                                        GTK_PARAM_READWRITE));
   /**
    * GtkPopover:position
@@ -1405,6 +1636,21 @@ gtk_popover_class_init (GtkPopoverClass *klass)
                                                          TRUE,
                                                          GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
 
+  /**
+   * GtkPopover:transitions-enabled
+   *
+   * Whether show/hide transitions are enabled for this popover.
+   *
+   * Since: 3.16
+   */
+  g_object_class_install_property (object_class,
+                                   PROP_TRANSITIONS_ENABLED,
+                                   g_param_spec_boolean ("transitions-enabled",
+                                                         P_("Transitions enabled"),
+                                                         P_("Whether show/hide transitions are enabled or not"),
+                                                         TRUE,
+                                                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+
   signals[CLOSED] =
     g_signal_new (I_("closed"),
                   G_TYPE_FROM_CLASS (object_class),
@@ -1415,20 +1661,6 @@ gtk_popover_class_init (GtkPopoverClass *klass)
 
   quark_widget_popovers = g_quark_from_static_string ("gtk-quark-widget-popovers");
   gtk_widget_class_set_accessible_type (widget_class, GTK_TYPE_POPOVER_ACCESSIBLE);
-}
-
-static void
-_gtk_popover_update_context_parent (GtkPopover *popover)
-{
-  GtkPopoverPrivate *priv = popover->priv;
-  GtkStyleContext *context, *parent_context = NULL;
-
-  context = gtk_widget_get_style_context (GTK_WIDGET (popover));
-
-  if (priv->widget)
-    parent_context = gtk_widget_get_style_context (priv->widget);
-
-  gtk_style_context_set_parent (context, parent_context);
 }
 
 static void
@@ -1446,18 +1678,19 @@ _gtk_popover_parent_hierarchy_changed (GtkWidget  *widget,
 
   g_object_ref (popover);
 
+  if (gtk_widget_has_grab (GTK_WIDGET (popover)))
+    gtk_popover_apply_modality (popover, FALSE);
+
   if (priv->window)
     _gtk_window_remove_popover (priv->window, GTK_WIDGET (popover));
 
   if (new_window)
-    _gtk_window_add_popover (new_window, GTK_WIDGET (popover));
+    _gtk_window_add_popover (new_window, GTK_WIDGET (popover), priv->widget, TRUE);
 
   priv->window = new_window;
 
   if (new_window)
     gtk_popover_update_position (popover);
-
-  _gtk_popover_update_context_parent (popover);
 
   if (gtk_widget_is_visible (GTK_WIDGET (popover)))
     gtk_widget_queue_resize (GTK_WIDGET (popover));
@@ -1504,14 +1737,26 @@ _gtk_popover_parent_grab_notify (GtkWidget  *widget,
   if (priv->modal &&
       gtk_widget_is_visible (GTK_WIDGET (popover)) &&
       !gtk_widget_has_grab (GTK_WIDGET (popover)))
-    gtk_widget_hide (GTK_WIDGET (popover));
+    {
+      GtkWidget *grab_widget;
+
+      grab_widget = gtk_grab_get_current ();
+
+      if (!grab_widget || !GTK_IS_POPOVER (grab_widget))
+        gtk_widget_hide (GTK_WIDGET (popover));
+    }
 }
 
 static void
 _gtk_popover_parent_unmap (GtkWidget *widget,
                            GtkPopover *popover)
 {
-  gtk_widget_unmap (GTK_WIDGET (popover));
+  GtkPopoverPrivate *priv = popover->priv;
+
+  if (priv->state == STATE_SHOWING)
+    priv->visible = FALSE;
+  else if (priv->state == STATE_SHOWN)
+    gtk_popover_set_state (popover, STATE_HIDING);
 }
 
 static void
@@ -1591,12 +1836,15 @@ _gtk_popover_set_scrollable (GtkPopover    *popover,
           g_object_unref (priv->hadj);
           priv->hadj = NULL;
         }
+
+      g_object_unref (priv->parent_scrollable);
     }
 
   priv->parent_scrollable = scrollable;
 
   if (scrollable)
     {
+      g_object_ref (scrollable);
       priv->vadj = gtk_scrollable_get_vadjustment (scrollable);
       priv->hadj = gtk_scrollable_get_hadjustment (scrollable);
 
@@ -1706,7 +1954,7 @@ gtk_popover_update_relative_to (GtkPopover *popover,
     }
 
   if (priv->window)
-    _gtk_window_add_popover (priv->window, GTK_WIDGET (popover));
+    _gtk_window_add_popover (priv->window, GTK_WIDGET (popover), priv->widget, TRUE);
 
   if (relative_to)
     scrollable = GTK_SCROLLABLE (gtk_widget_get_ancestor (priv->widget, GTK_TYPE_SCROLLABLE));
@@ -1721,7 +1969,6 @@ gtk_popover_update_relative_to (GtkPopover *popover,
     }
 
   _gtk_widget_update_parent_muxer (GTK_WIDGET (popover));
-  _gtk_popover_update_context_parent (popover);
   g_object_unref (popover);
 }
 
@@ -1968,6 +2215,52 @@ gtk_popover_get_modal (GtkPopover *popover)
   return popover->priv->modal;
 }
 
+/**
+ * gtk_popover_set_transitions_enabled:
+ * @popover: a #GtkPopover
+ * @transitions_enabled: Whether transitions are enabled
+ *
+ * Sets whether show/hide transitions are enabled on this popover
+ *
+ * Since: 3.16
+ */
+void
+gtk_popover_set_transitions_enabled (GtkPopover *popover,
+                                     gboolean    transitions_enabled)
+{
+  GtkPopoverPrivate *priv = popover->priv;
+
+  g_return_if_fail (GTK_IS_POPOVER (popover));
+
+  transitions_enabled = !!transitions_enabled;
+
+  if (priv->transitions_enabled == transitions_enabled)
+    return;
+
+  priv->transitions_enabled = transitions_enabled;
+  g_object_notify (G_OBJECT (popover), "transitions-enabled");
+}
+
+/**
+ * gtk_popover_get_transitions_enabled:
+ * @popover: a #GtkPopover
+ *
+ * Returns whether show/hide transitions are enabled on this popover.
+ *
+ * Returns: #TRUE if the show and hide transitions of the given
+ *          popover are enabled, #FALSE otherwise.
+ *
+ * Since: 3.16
+ */
+gboolean
+gtk_popover_get_transitions_enabled (GtkPopover *popover)
+{
+  g_return_val_if_fail (GTK_IS_POPOVER (popover), FALSE);
+
+  return popover->priv->transitions_enabled;
+}
+
+
 static void
 back_to_main (GtkWidget *popover)
 {
@@ -2031,10 +2324,14 @@ gtk_popover_bind_model (GtkPopover  *popover,
       stack = gtk_stack_new ();
       gtk_stack_set_vhomogeneous (GTK_STACK (stack), FALSE);
       gtk_stack_set_transition_type (GTK_STACK (stack), GTK_STACK_TRANSITION_TYPE_SLIDE_LEFT_RIGHT);
+      gtk_stack_set_interpolate_size (GTK_STACK (stack), TRUE);
       gtk_widget_show (stack);
       gtk_container_add (GTK_CONTAINER (popover), stack);
 
-      gtk_menu_section_box_new_toplevel (GTK_STACK (stack), model, action_namespace);
+      gtk_menu_section_box_new_toplevel (GTK_STACK (stack),
+                                         model,
+                                         action_namespace,
+                                         popover);
       gtk_stack_set_visible_child_name (GTK_STACK (stack), "main");
 
       g_signal_connect (popover, "unmap", G_CALLBACK (back_to_main), NULL);
@@ -2075,4 +2372,61 @@ gtk_popover_new_from_model (GtkWidget  *relative_to,
   gtk_popover_bind_model (GTK_POPOVER (popover), model, NULL);
 
   return popover;
+}
+
+/**
+ * gtk_popover_set_default_widget:
+ * @popover: a #GtkPopover
+ * @widget: (allow-none): the new default widget, or %NULL
+ *
+ * Sets the widget that should be set as default widget while
+ * the popover is shown (see gtk_window_set_default()). #GtkPopover
+ * remembers the previous default widget and reestablishes it
+ * when the popover is dismissed.
+ *
+ * Since: 3.18
+ */
+void
+gtk_popover_set_default_widget (GtkPopover *popover,
+                                GtkWidget  *widget)
+{
+  GtkPopoverPrivate *priv = popover->priv;
+
+  g_return_if_fail (GTK_IS_POPOVER (popover));
+  g_return_if_fail (widget == NULL || gtk_widget_get_can_default (widget));
+
+  if (priv->default_widget == widget)
+    return;
+
+  if (priv->default_widget)
+    g_object_unref (priv->default_widget);
+
+  priv->default_widget = widget;
+
+  if (priv->default_widget)
+    g_object_ref (priv->default_widget);
+
+  if (gtk_widget_get_mapped (GTK_WIDGET (popover)))
+    gtk_window_set_default (priv->window, priv->default_widget);
+}
+
+/**
+ * gtk_popover_get_default_widget:
+ * @popover: a #GtkPopover
+ *
+ * Gets the widget that should be set as the default while
+ * the popover is shown.
+ *
+ * Returns: (transfer none): the default widget, or %NULL if there is none
+ *
+ * Since: 3.18
+ */
+GtkWidget *
+gtk_popover_get_default_widget (GtkPopover *popover)
+{
+  GtkPopoverPrivate *priv = popover->priv;
+
+  g_return_val_if_fail (GTK_IS_POPOVER (popover), NULL);
+
+  return priv->default_widget;
 }

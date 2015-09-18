@@ -22,71 +22,124 @@
 #include "gtkcssnumbervalueprivate.h"
 #include "gtkstylecontextprivate.h"
 
-typedef struct _GtkCssChangeTranslation GtkCssChangeTranslation;
-struct _GtkCssChangeTranslation {
-  GtkCssChange from;
-  GtkCssChange to;
-};
-
-static GtkCssChange
-gtk_css_change_translate (GtkCssChange                   match,
-                         const GtkCssChangeTranslation *translations,
-                         guint                         n_translations)
-{
-  GtkCssChange result = match;
-  guint i;
-
-  for (i = 0; i < n_translations; i++)
-    {
-      if (match & translations[i].from)
-        {
-          result &= ~translations[i].from;
-          result |= translations[i].to;
-        }
-    }
-
-  return result;
-}
-
 GtkCssChange
 _gtk_css_change_for_sibling (GtkCssChange match)
 {
-  static const GtkCssChangeTranslation table[] = {
-    { GTK_CSS_CHANGE_CLASS, GTK_CSS_CHANGE_SIBLING_CLASS },
-    { GTK_CSS_CHANGE_NAME, GTK_CSS_CHANGE_SIBLING_NAME },
-    { GTK_CSS_CHANGE_POSITION, GTK_CSS_CHANGE_SIBLING_POSITION },
-    { GTK_CSS_CHANGE_STATE, GTK_CSS_CHANGE_SIBLING_STATE },
-    { GTK_CSS_CHANGE_SOURCE, 0 },
-    { GTK_CSS_CHANGE_ANIMATE, 0 }
-  };
+#define BASE_STATES ( GTK_CSS_CHANGE_CLASS \
+                    | GTK_CSS_CHANGE_NAME \
+                    | GTK_CSS_CHANGE_ID \
+                    | GTK_CSS_CHANGE_FIRST_CHILD \
+                    | GTK_CSS_CHANGE_LAST_CHILD \
+                    | GTK_CSS_CHANGE_NTH_CHILD \
+                    | GTK_CSS_CHANGE_NTH_LAST_CHILD \
+                    | GTK_CSS_CHANGE_STATE )
 
-  return gtk_css_change_translate (match, table, G_N_ELEMENTS (table)); 
+#define SIBLING_SHIFT 8
+
+  return (match & ~(BASE_STATES|GTK_CSS_CHANGE_SOURCE|GTK_CSS_CHANGE_PARENT_STYLE)) | ((match & BASE_STATES) << SIBLING_SHIFT);
+
+#undef BASE_STATES
+#undef SIBLING_SHIFT
 }
 
 GtkCssChange
 _gtk_css_change_for_child (GtkCssChange match)
 {
-  static const GtkCssChangeTranslation table[] = {
-    { GTK_CSS_CHANGE_CLASS, GTK_CSS_CHANGE_PARENT_CLASS },
-    { GTK_CSS_CHANGE_NAME, GTK_CSS_CHANGE_PARENT_NAME },
-    { GTK_CSS_CHANGE_POSITION, GTK_CSS_CHANGE_PARENT_POSITION },
-    { GTK_CSS_CHANGE_STATE, GTK_CSS_CHANGE_PARENT_STATE },
-    { GTK_CSS_CHANGE_SIBLING_CLASS, GTK_CSS_CHANGE_PARENT_SIBLING_CLASS },
-    { GTK_CSS_CHANGE_SIBLING_NAME, GTK_CSS_CHANGE_PARENT_SIBLING_NAME },
-    { GTK_CSS_CHANGE_SIBLING_POSITION, GTK_CSS_CHANGE_PARENT_SIBLING_POSITION },
-    { GTK_CSS_CHANGE_SIBLING_STATE, GTK_CSS_CHANGE_PARENT_SIBLING_STATE },
-    { GTK_CSS_CHANGE_SOURCE, 0 },
-    { GTK_CSS_CHANGE_ANIMATE, 0 }
-  };
+#define BASE_STATES ( GTK_CSS_CHANGE_CLASS \
+                    | GTK_CSS_CHANGE_NAME \
+                    | GTK_CSS_CHANGE_ID \
+                    | GTK_CSS_CHANGE_FIRST_CHILD \
+                    | GTK_CSS_CHANGE_LAST_CHILD \
+                    | GTK_CSS_CHANGE_NTH_CHILD \
+                    | GTK_CSS_CHANGE_NTH_LAST_CHILD \
+                    | GTK_CSS_CHANGE_STATE \
+                    | GTK_CSS_CHANGE_SIBLING_CLASS \
+                    | GTK_CSS_CHANGE_SIBLING_NAME \
+                    | GTK_CSS_CHANGE_SIBLING_ID \
+                    | GTK_CSS_CHANGE_SIBLING_FIRST_CHILD \
+                    | GTK_CSS_CHANGE_SIBLING_LAST_CHILD \
+                    | GTK_CSS_CHANGE_SIBLING_NTH_CHILD \
+                    | GTK_CSS_CHANGE_SIBLING_NTH_LAST_CHILD \
+                    | GTK_CSS_CHANGE_SIBLING_STATE )
 
-  return gtk_css_change_translate (match, table, G_N_ELEMENTS (table)); 
+#define PARENT_SHIFT 16
+
+  return (match & ~(BASE_STATES|GTK_CSS_CHANGE_SOURCE|GTK_CSS_CHANGE_PARENT_STYLE)) | ((match & BASE_STATES) << PARENT_SHIFT);
+
+#undef BASE_STATES
+#undef PARENT_SHIFT
 }
 
-GtkCssDependencies
-_gtk_css_dependencies_union (GtkCssDependencies first,
-                             GtkCssDependencies second)
+void
+gtk_css_change_print (GtkCssChange  change,
+                      GString      *string)
 {
-  return (first  & ~GTK_CSS_EQUALS_PARENT) | ((first  & GTK_CSS_EQUALS_PARENT) ? GTK_CSS_DEPENDS_ON_PARENT : 0)
-       | (second & ~GTK_CSS_EQUALS_PARENT) | ((second & GTK_CSS_EQUALS_PARENT) ? GTK_CSS_DEPENDS_ON_PARENT : 0);
+  const struct {
+    GtkCssChange flags;
+    const char *name;
+  } names[] = {
+    { GTK_CSS_CHANGE_CLASS, "class" },
+    { GTK_CSS_CHANGE_NAME, "name" },
+    { GTK_CSS_CHANGE_ID, "id" },
+    { GTK_CSS_CHANGE_FIRST_CHILD, "first-child" },
+    { GTK_CSS_CHANGE_LAST_CHILD, "last-child" },
+    { GTK_CSS_CHANGE_NTH_CHILD, "nth-child" },
+    { GTK_CSS_CHANGE_NTH_LAST_CHILD, "nth-last-child" },
+    { GTK_CSS_CHANGE_STATE, "state" },
+    { GTK_CSS_CHANGE_SIBLING_CLASS, "sibling-class" },
+    { GTK_CSS_CHANGE_SIBLING_NAME, "sibling-name" },
+    { GTK_CSS_CHANGE_SIBLING_ID, "sibling-id" },
+    { GTK_CSS_CHANGE_SIBLING_FIRST_CHILD, "sibling-first-child" },
+    { GTK_CSS_CHANGE_SIBLING_LAST_CHILD, "sibling-last-child" },
+    { GTK_CSS_CHANGE_SIBLING_NTH_CHILD, "sibling-nth-child" },
+    { GTK_CSS_CHANGE_SIBLING_NTH_LAST_CHILD, "sibling-nth-last-child" },
+    { GTK_CSS_CHANGE_SIBLING_STATE, "sibling-state" },
+    { GTK_CSS_CHANGE_PARENT_CLASS, "parent-class" },
+    { GTK_CSS_CHANGE_PARENT_NAME, "parent-name" },
+    { GTK_CSS_CHANGE_PARENT_ID, "parent-id" },
+    { GTK_CSS_CHANGE_PARENT_FIRST_CHILD, "parent-first-child" },
+    { GTK_CSS_CHANGE_PARENT_LAST_CHILD, "parent-last-child" },
+    { GTK_CSS_CHANGE_PARENT_NTH_CHILD, "parent-nth-child" },
+    { GTK_CSS_CHANGE_PARENT_NTH_LAST_CHILD, "parent-nth-last-child" },
+    { GTK_CSS_CHANGE_PARENT_STATE, "parent-state" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_CLASS, "parent-sibling-" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_NAME, "parent-sibling-name" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_ID, "parent-sibling-id" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_FIRST_CHILD, "parent-sibling-first-child" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_LAST_CHILD, "parent-sibling-last-child" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_NTH_CHILD, "parent-sibling-nth-child" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_NTH_LAST_CHILD, "parent-sibling-nth-last-child" },
+    { GTK_CSS_CHANGE_PARENT_SIBLING_STATE, "parent-sibling-state" },
+    { GTK_CSS_CHANGE_SOURCE, "source" },
+    { GTK_CSS_CHANGE_PARENT_STYLE, "parent-style" },
+    { GTK_CSS_CHANGE_TIMESTAMP, "timestamp" },
+    { GTK_CSS_CHANGE_ANIMATIONS, "animations" },
+  };
+  guint i;
+  gboolean first;
+
+  first = TRUE;
+
+  for (i = 0; i < G_N_ELEMENTS (names); i++)
+    {
+      if (change & names[i].flags)
+        {
+          if (first)
+            first = FALSE;
+          else
+            g_string_append (string, "|");
+          g_string_append (string, names[i].name);
+        }
+    }
+}
+
+char *
+gtk_css_change_to_string (GtkCssChange change)
+{
+  GString *string = g_string_new (NULL);
+
+  gtk_css_change_print (change, string);
+
+  return g_string_free (string, FALSE);
 }
 

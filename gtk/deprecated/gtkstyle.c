@@ -366,6 +366,8 @@ static const GdkColor gtk_default_insensitive_bg = { 0, GTK_GRAY };
 static const GdkColor gtk_default_selected_base =  { 0, GTK_BLUE };
 static const GdkColor gtk_default_active_base =    { 0, GTK_VERY_DARK_GRAY };
 
+static GQuark quark_default_style;
+
 /* --- signals --- */
 static guint realize_signal = 0;
 static guint unrealize_signal = 0;
@@ -507,6 +509,8 @@ gtk_style_class_init (GtkStyleClass *klass)
 				   NULL, NULL,
 				   _gtk_marshal_VOID__VOID,
 				   G_TYPE_NONE, 0);
+
+  quark_default_style = g_quark_from_static_string ("gtk-legacy-default-style");
 }
 
 static void
@@ -542,8 +546,7 @@ gtk_style_finalize (GObject *object)
         }
     }
 
-  g_slist_foreach (style->icon_factories, (GFunc) g_object_unref, NULL);
-  g_slist_free (style->icon_factories);
+  g_slist_free_full (style->icon_factories, g_object_unref);
 
   pango_font_description_free (style->font_desc);
 
@@ -1108,8 +1111,7 @@ gtk_style_real_copy (GtkStyle *style,
   if (src->rc_style)
     g_object_ref (src->rc_style);
 
-  g_slist_foreach (style->icon_factories, (GFunc) g_object_unref, NULL);
-  g_slist_free (style->icon_factories);
+  g_slist_free_full (style->icon_factories, g_object_unref);
   style->icon_factories = g_slist_copy (src->icon_factories);
   g_slist_foreach (style->icon_factories, (GFunc) g_object_ref, NULL);
 }
@@ -4017,14 +4019,14 @@ gtk_widget_get_default_style_for_screen (GdkScreen *screen)
 {
   GtkStyle *default_style;
 
-  default_style = g_object_get_data (G_OBJECT (screen), "gtk-legacy-default-style");
+  default_style = g_object_get_qdata (G_OBJECT (screen), quark_default_style);
   if (default_style == NULL)
     {
       default_style = gtk_style_new ();
-      g_object_set_data_full (G_OBJECT (screen),
-                              I_("gtk-legacy-default-style"),
-                              default_style,
-                              g_object_unref);
+      g_object_set_qdata_full (G_OBJECT (screen),
+                               quark_default_style,
+                               default_style,
+                               g_object_unref);
     }
 
   return default_style;

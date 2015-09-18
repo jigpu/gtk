@@ -31,6 +31,12 @@ typedef struct GdkMirKeymapClass GdkMirKeymapClass;
 #define GDK_IS_MIR_KEYMAP_CLASS(klass)   (G_TYPE_CHECK_CLASS_TYPE ((klass), GDK_TYPE_MIR_KEYMAP))
 #define GDK_MIR_KEYMAP_GET_CLASS(obj)    (G_TYPE_INSTANCE_GET_CLASS ((obj), GDK_TYPE_MIR_KEYMAP, GdkMirKeymapClass))
 
+#define IsModifierKey(keysym) \
+  (((keysym) >= XKB_KEY_Shift_L && (keysym) <= XKB_KEY_Hyper_R) || \
+   ((keysym) >= XKB_KEY_ISO_Lock && (keysym) <= XKB_KEY_ISO_Last_Group_Lock) || \
+   ((keysym) == XKB_KEY_Mode_switch) || \
+   ((keysym) == XKB_KEY_Num_Lock))
+
 struct GdkMirKeymap
 {
   GdkKeymap parent_instance;
@@ -90,6 +96,13 @@ gdk_mir_keymap_get_num_lock_state (GdkKeymap *keymap)
 {
   //g_printerr ("gdk_mir_keymap_get_num_lock_state\n");
   return xkb_state_led_name_is_active (GDK_MIR_KEYMAP (keymap)->xkb_state, XKB_LED_NAME_NUM);
+}
+
+static gboolean
+gdk_mir_keymap_get_scroll_lock_state (GdkKeymap *keymap)
+{
+  //g_printerr ("gdk_mir_keymap_get_scroll_lock_state\n");
+  return xkb_state_led_name_is_active (GDK_MIR_KEYMAP (keymap)->xkb_state, XKB_LED_NAME_SCROLL);
 }
 
 static gboolean
@@ -342,6 +355,14 @@ gdk_mir_keymap_get_modifier_state (GdkKeymap *keymap)
   return get_gdk_modifiers (mir_keymap->xkb_keymap, mods);
 }
 
+gboolean
+_gdk_mir_keymap_key_is_modifier (GdkKeymap *keymap,
+                                 guint      keycode)
+{
+  // FIXME: use xkb_state
+  return IsModifierKey (keycode);
+}
+
 static void
 update_direction (GdkMirKeymap *keymap)
 {
@@ -456,6 +477,7 @@ gdk_mir_keymap_class_init (GdkMirKeymapClass *klass)
   keymap_class->have_bidi_layouts = gdk_mir_keymap_have_bidi_layouts;
   keymap_class->get_caps_lock_state = gdk_mir_keymap_get_caps_lock_state;
   keymap_class->get_num_lock_state = gdk_mir_keymap_get_num_lock_state;
+  keymap_class->get_scroll_lock_state = gdk_mir_keymap_get_scroll_lock_state;
   keymap_class->get_entries_for_keyval = gdk_mir_keymap_get_entries_for_keyval;
   keymap_class->get_entries_for_keycode = gdk_mir_keymap_get_entries_for_keycode;
   keymap_class->lookup_key = gdk_mir_keymap_lookup_key;

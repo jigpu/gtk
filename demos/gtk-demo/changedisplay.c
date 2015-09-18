@@ -2,7 +2,7 @@
  *
  * Demonstrates migrating a window between different displays.
  * A display is a mouse and keyboard with some number of
- * associated monitors. The neat thing about having multiple 
+ * associated monitors. The neat thing about having multiple
  * displays is that they can be on a completely separate
  * computers, as long as there is a network connection to the
  * computer where the application is running.
@@ -26,9 +26,6 @@
  *  - Using GtkDialog
  */
 #include <string.h>
-
-#undef GDK_DISABLE_DEPRECATED
-
 #include <glib/gi18n.h>
 #include <gtk/gtk.h>
 
@@ -126,7 +123,7 @@ query_for_toplevel (GdkScreen  *screen,
   gtk_container_add (GTK_CONTAINER (frame), label);
 
   gtk_widget_show_all (popup);
-  cursor = gdk_cursor_new_for_display (display, GDK_CROSSHAIR);
+  cursor = gdk_cursor_new_from_name (display, "crosshair");
 
   if (gdk_device_grab (gtk_get_current_event_device (),
                        gtk_widget_get_window (popup),
@@ -245,7 +242,7 @@ open_display_cb (GtkWidget         *button,
           if (!result)
             {
               gchar *error_msg =
-                g_strdup_printf  ("Can't open display :\n\t%s\nplease try another one\n",
+                g_strdup_printf  ("Can't open display:\n\t%s\nplease try another one\n",
                                   new_screen_name);
               gtk_label_set_text (GTK_LABEL (dialog_label), error_msg);
               g_free (error_msg);
@@ -526,12 +523,12 @@ do_changedisplay (GtkWidget *do_widget)
 
       info = g_new0 (ChangeDisplayInfo, 1);
 
-      info->window = gtk_dialog_new_with_buttons ("Change Screen or display",
-                                            GTK_WINDOW (do_widget),
-                                            0,
-                                            _("_Close"),  GTK_RESPONSE_CLOSE,
-                                            "Change",         GTK_RESPONSE_OK,
-                                            NULL);
+      info->window = gtk_dialog_new_with_buttons ("Change Display",
+                                                  GTK_WINDOW (do_widget),
+                                                  0,
+                                                  "Close", GTK_RESPONSE_CLOSE,
+                                                  "Change", GTK_RESPONSE_OK,
+                                                  NULL);
 
       gtk_window_set_default_size (GTK_WINDOW (info->window), 300, 400);
 

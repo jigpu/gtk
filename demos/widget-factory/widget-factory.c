@@ -41,6 +41,37 @@ change_theme_state (GSimpleAction *action,
   g_simple_action_set_state (action, state);
 }
 
+static gboolean
+get_idle (gpointer data)
+{
+  GtkWidget *window = data;
+  GtkApplication *app = gtk_window_get_application (GTK_WINDOW (window));
+
+  gtk_widget_set_sensitive (window, TRUE);
+  gdk_window_set_cursor (gtk_widget_get_window (window), NULL);
+  g_application_unmark_busy (G_APPLICATION (app));
+
+  return G_SOURCE_REMOVE;
+}
+
+static void
+get_busy (GSimpleAction *action,
+          GVariant      *parameter,
+          gpointer       user_data)
+{
+  GtkWidget *window = user_data;
+  GdkCursor *cursor;
+  GtkApplication *app = gtk_window_get_application (GTK_WINDOW (window));
+
+  g_application_mark_busy (G_APPLICATION (app));
+  cursor = gdk_cursor_new_from_name (gtk_widget_get_display (window), "wait");
+  gdk_window_set_cursor (gtk_widget_get_window (window), cursor);
+  g_object_unref (cursor);
+  g_timeout_add (5000, get_idle, window);
+
+  gtk_widget_set_sensitive (window, FALSE);
+}
+
 static void
 activate_search (GSimpleAction *action,
                  GVariant      *parameter,
@@ -308,27 +339,37 @@ on_page_combo_changed (GtkComboBox *combo,
 {
   GtkWidget *from;
   GtkWidget *to;
+  GtkWidget *print;
 
   from = GTK_WIDGET (g_object_get_data (G_OBJECT (combo), "range_from_spin"));
   to = GTK_WIDGET (g_object_get_data (G_OBJECT (combo), "range_to_spin"));
+  print = GTK_WIDGET (g_object_get_data (G_OBJECT (combo), "print_button"));
 
   switch (gtk_combo_box_get_active (combo))
     {
     case 0: /* Range */
       gtk_widget_set_sensitive (from, TRUE);
       gtk_widget_set_sensitive (to, TRUE);
+      gtk_widget_set_sensitive (print, TRUE);
       break;
     case 1: /* All */
       gtk_widget_set_sensitive (from, FALSE);
       gtk_widget_set_sensitive (to, FALSE);
       gtk_spin_button_set_value (GTK_SPIN_BUTTON (from), 1);
       gtk_spin_button_set_value (GTK_SPIN_BUTTON (to), 99);
+      gtk_widget_set_sensitive (print, TRUE);
       break;
     case 2: /* Current */
       gtk_widget_set_sensitive (from, FALSE);
       gtk_widget_set_sensitive (to, FALSE);
       gtk_spin_button_set_value (GTK_SPIN_BUTTON (from), 7);
       gtk_spin_button_set_value (GTK_SPIN_BUTTON (to), 7);
+      gtk_widget_set_sensitive (print, TRUE);
+      break;
+    case 4:
+      gtk_widget_set_sensitive (from, FALSE);
+      gtk_widget_set_sensitive (to, FALSE);
+      gtk_widget_set_sensitive (print, FALSE);
       break;
     default:;
     }
@@ -342,8 +383,8 @@ on_range_from_changed (GtkSpinButton *from)
 
   to = GTK_SPIN_BUTTON (g_object_get_data (G_OBJECT (from), "range_to_spin"));
 
-  v1 = gtk_spin_button_get_value_as_int (from);  
-  v2 = gtk_spin_button_get_value_as_int (to);  
+  v1 = gtk_spin_button_get_value_as_int (from);
+  v2 = gtk_spin_button_get_value_as_int (to);
 
   if (v1 > v2)
     gtk_spin_button_set_value (to, v1);
@@ -357,8 +398,8 @@ on_range_to_changed (GtkSpinButton *to)
 
   from = GTK_SPIN_BUTTON (g_object_get_data (G_OBJECT (to), "range_from_spin"));
 
-  v1 = gtk_spin_button_get_value_as_int (from);  
-  v2 = gtk_spin_button_get_value_as_int (to);  
+  v1 = gtk_spin_button_get_value_as_int (from);
+  v2 = gtk_spin_button_get_value_as_int (to);
 
   if (v1 > v2)
     gtk_spin_button_set_value (from, v2);
@@ -718,7 +759,7 @@ populate_colors (GtkWidget *widget)
   GdkRGBA rgba;
 
   gtk_list_box_set_header_func (GTK_LIST_BOX (widget), update_title_header, NULL, NULL);
-                             
+
   for (i = 0; i < G_N_ELEMENTS (colors); i++)
     {
       row = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 20);
@@ -1099,6 +1140,239 @@ osd_frame_button_press (GtkWidget *frame, GdkEventButton *event, gpointer data)
   return GDK_EVENT_STOP;
 }
 
+static gboolean
+page_combo_separator_func (GtkTreeModel *model,
+                           GtkTreeIter  *iter,
+                           gpointer      data)
+{
+  gchar *text;
+  gboolean res;
+
+  gtk_tree_model_get (model, iter, 0, &text, -1);
+  res = g_strcmp0 (text, "-") == 0;
+  g_free (text);
+
+  return res;
+}
+
+static void
+activate_item (GtkWidget *item, GtkTextView *tv)
+{
+  const gchar *tag;
+  GtkTextIter start, end;
+  gboolean active;
+
+  g_object_get (item, "active", &active, NULL);
+  tag = (const gchar *)g_object_get_data (G_OBJECT (item), "tag");
+  gtk_text_buffer_get_selection_bounds (gtk_text_view_get_buffer (tv), &start, &end);
+  if (active)
+    gtk_text_buffer_apply_tag_by_name (gtk_text_view_get_buffer (tv), tag, &start, &end);
+  else
+    gtk_text_buffer_remove_tag_by_name (gtk_text_view_get_buffer (tv), tag, &start, &end);
+}
+
+static void
+add_item (GtkTextView *tv,
+          GtkWidget   *popup,
+          const gchar *text,
+          const gchar *tag,
+          gboolean     set)
+{
+  GtkWidget *item, *label;
+
+  if (GTK_IS_MENU (popup))
+    {
+      item = gtk_check_menu_item_new ();
+      gtk_check_menu_item_set_active (GTK_CHECK_MENU_ITEM (item), set);
+      g_signal_connect (item, "toggled", G_CALLBACK (activate_item), tv);
+    }
+  else
+    {
+      item = gtk_check_button_new ();
+      gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (item), set);
+      gtk_button_set_focus_on_click (GTK_BUTTON (item), FALSE);
+      g_signal_connect (item, "clicked", G_CALLBACK (activate_item), tv);
+    }
+
+  label = gtk_label_new ("");
+  gtk_label_set_xalign (GTK_LABEL (label), 0);
+  gtk_label_set_markup (GTK_LABEL (label), text);
+  gtk_widget_show (label);
+  gtk_container_add (GTK_CONTAINER (item), label);
+  g_object_set_data (G_OBJECT (item), "tag", (gpointer)tag);
+  gtk_widget_show (item);
+  gtk_container_add (GTK_CONTAINER (popup), item);
+}
+
+static void
+populate_popup (GtkTextView *tv,
+                GtkWidget   *popup)
+{
+  gboolean has_selection;
+  GtkWidget *item;
+  GtkTextIter start, end, iter;
+  GtkTextTagTable *tags;
+  GtkTextTag *bold, *italic, *underline;
+  gboolean all_bold, all_italic, all_underline;
+
+  has_selection = gtk_text_buffer_get_selection_bounds (gtk_text_view_get_buffer (tv), &start, &end);
+
+  if (!has_selection)
+    return;
+
+  tags = gtk_text_buffer_get_tag_table (gtk_text_view_get_buffer (tv));
+  bold = gtk_text_tag_table_lookup (tags, "bold");
+  italic = gtk_text_tag_table_lookup (tags, "italic");
+  underline = gtk_text_tag_table_lookup (tags, "underline");
+  all_bold = TRUE;
+  all_italic = TRUE;
+  all_underline = TRUE;
+  gtk_text_iter_assign (&iter, &start);
+  while (!gtk_text_iter_equal (&iter, &end))
+    {
+      all_bold &= gtk_text_iter_has_tag (&iter, bold);
+      all_italic &= gtk_text_iter_has_tag (&iter, italic);
+      all_underline &= gtk_text_iter_has_tag (&iter, underline);
+      gtk_text_iter_forward_char (&iter);
+    }
+
+  if (GTK_IS_MENU (popup))
+    {
+      item = gtk_separator_menu_item_new ();
+      gtk_widget_show (item);
+      gtk_container_add (GTK_CONTAINER (popup), item);
+    }
+
+  add_item (tv, popup, "<b>Bold</b>", "bold", all_bold);
+  add_item (tv, popup, "<i>Italics</i>", "italic", all_italic);
+  add_item (tv, popup, "<u>Underline</u>", "underline", all_underline);
+}
+
+static void
+open_popover_text_changed (GtkEntry *entry, GParamSpec *pspec, GtkWidget *button)
+{
+  const gchar *text;
+
+  text = gtk_entry_get_text (entry);
+  gtk_widget_set_sensitive (button, strlen (text) > 0);
+}
+
+static gboolean
+show_page_again (gpointer data)
+{
+  gtk_widget_show (GTK_WIDGET (data));
+  return G_SOURCE_REMOVE;
+}
+
+static void
+tab_close_cb (GtkWidget *page)
+{
+  gtk_widget_hide (page);
+  g_timeout_add (2500, show_page_again, page);
+}
+
+typedef struct _GTestPermission GTestPermission;
+typedef struct _GTestPermissionClass GTestPermissionClass;
+
+struct _GTestPermission
+{
+  GPermission parent;
+};
+
+struct _GTestPermissionClass
+{
+  GPermissionClass parent_class;
+};
+
+G_DEFINE_TYPE (GTestPermission, g_test_permission, G_TYPE_PERMISSION)
+
+static void
+g_test_permission_init (GTestPermission *test)
+{
+  g_permission_impl_update (G_PERMISSION (test), TRUE, TRUE, TRUE);
+}
+
+static gboolean
+update_allowed (GPermission *permission,
+                gboolean     allowed)
+{
+  g_permission_impl_update (permission, allowed, TRUE, TRUE);
+
+  return TRUE;
+}
+
+static gboolean
+acquire (GPermission   *permission,
+         GCancellable  *cancellable,
+         GError       **error)
+{
+  return update_allowed (permission, TRUE);
+}
+
+static void
+acquire_async (GPermission         *permission,
+               GCancellable        *cancellable,
+               GAsyncReadyCallback  callback,
+               gpointer             user_data)
+{
+  GTask *task;
+
+  task = g_task_new ((GObject*)permission, NULL, callback, user_data);
+  g_task_return_boolean (task, update_allowed (permission, TRUE));
+  g_object_unref (task);
+}
+
+gboolean
+acquire_finish (GPermission   *permission,
+                GAsyncResult  *res,
+                GError       **error)
+{
+  return g_task_propagate_boolean (G_TASK (res), error);
+}
+
+static gboolean
+release (GPermission   *permission,
+         GCancellable  *cancellable,
+         GError       **error)
+{
+  return update_allowed (permission, FALSE);
+}
+
+static void
+release_async (GPermission         *permission,
+               GCancellable        *cancellable,
+               GAsyncReadyCallback  callback,
+               gpointer             user_data)
+{
+  GTask *task;
+
+  task = g_task_new ((GObject*)permission, NULL, callback, user_data);
+  g_task_return_boolean (task, update_allowed (permission, FALSE));
+  g_object_unref (task);
+}
+
+gboolean
+release_finish (GPermission   *permission,
+                GAsyncResult  *result,
+                GError       **error)
+{
+  return g_task_propagate_boolean (G_TASK (result), error);
+}
+
+static void
+g_test_permission_class_init (GTestPermissionClass *class)
+{
+  GPermissionClass *permission_class = G_PERMISSION_CLASS (class);
+
+  permission_class->acquire = acquire;
+  permission_class->acquire_async = acquire_async;
+  permission_class->acquire_finish = acquire_finish;
+
+  permission_class->release = release;
+  permission_class->release_async = release_async;
+  permission_class->release_finish = release_finish;
+}
+
 static void
 activate (GApplication *app)
 {
@@ -1107,6 +1381,7 @@ activate (GApplication *app)
   GtkWidget *widget;
   GtkWidget *widget2;
   GtkWidget *widget3;
+  GtkWidget *widget4;
   GtkWidget *stack;
   GtkWidget *dialog;
   GtkAdjustment *adj;
@@ -1114,7 +1389,8 @@ activate (GApplication *app)
   static GActionEntry win_entries[] = {
     { "dark", NULL, NULL, "false", change_theme_state },
     { "search", activate_search, NULL, NULL, NULL },
-    { "delete", activate_delete, NULL, NULL, NULL }
+    { "delete", activate_delete, NULL, NULL, NULL },
+    { "busy", get_busy, NULL, NULL, NULL }
   };
   struct {
     const gchar *action_and_target;
@@ -1127,11 +1403,12 @@ activate (GApplication *app)
     { "win.delete", { "Delete", NULL } }
   };
   gint i;
+  GPermission *permission;
 
   g_type_ensure (my_text_view_get_type ());
 
   provider = gtk_css_provider_new ();
-  gtk_css_provider_load_from_data (provider, ".circular-button { border-radius: 20px; outline-radius: 20px; }", -1, NULL);
+  gtk_css_provider_load_from_resource (provider, "/org/gtk/WidgetFactory/widget-factory.css");
   gtk_style_context_add_provider_for_screen (gdk_screen_get_default (),
                                              GTK_STYLE_PROVIDER (provider),
                                              GTK_STYLE_PROVIDER_PRIORITY_USER);
@@ -1146,6 +1423,7 @@ activate (GApplication *app)
   gtk_builder_add_callback_symbol (builder, "on_range_from_changed", (GCallback)on_range_from_changed);
   gtk_builder_add_callback_symbol (builder, "on_range_to_changed", (GCallback)on_range_to_changed);
   gtk_builder_add_callback_symbol (builder, "osd_frame_button_press", (GCallback)osd_frame_button_press);
+  gtk_builder_add_callback_symbol (builder, "tab_close_cb", (GCallback)tab_close_cb);
 
   gtk_builder_connect_signals (builder, NULL);
 
@@ -1236,6 +1514,8 @@ activate (GApplication *app)
   g_signal_connect (dialog, "response", G_CALLBACK (close_dialog), NULL);
   widget = (GtkWidget *)gtk_builder_get_object (builder, "preference_dialog_button");
   g_signal_connect (widget, "clicked", G_CALLBACK (show_dialog), dialog);
+  widget = (GtkWidget *)gtk_builder_get_object (builder, "circular_button");
+  g_signal_connect (widget, "clicked", G_CALLBACK (show_dialog), dialog);
 
   dialog = (GtkWidget *)gtk_builder_get_object (builder, "selection_dialog");
   widget = (GtkWidget *)gtk_builder_get_object (builder, "text3");
@@ -1254,12 +1534,15 @@ activate (GApplication *app)
   populate_colors ((GtkWidget *)gtk_builder_get_object (builder, "munsell"));
 
   widget = (GtkWidget *)gtk_builder_get_object (builder, "page_combo");
+  gtk_combo_box_set_row_separator_func (GTK_COMBO_BOX (widget), page_combo_separator_func, NULL, NULL);
   widget2 = (GtkWidget *)gtk_builder_get_object (builder, "range_from_spin");
   widget3 = (GtkWidget *)gtk_builder_get_object (builder, "range_to_spin");
+  widget4 = (GtkWidget *)gtk_builder_get_object (builder, "print_button");
   g_object_set_data (G_OBJECT (widget), "range_from_spin", widget2);
   g_object_set_data (G_OBJECT (widget3), "range_from_spin", widget2);
   g_object_set_data (G_OBJECT (widget), "range_to_spin", widget3);
   g_object_set_data (G_OBJECT (widget2), "range_to_spin", widget3);
+  g_object_set_data (G_OBJECT (widget), "print_button", widget4);
 
   set_accel (GTK_APPLICATION (app), GTK_WIDGET (gtk_builder_get_object (builder, "quitmenuitem")));
   set_accel (GTK_APPLICATION (app), GTK_WIDGET (gtk_builder_get_object (builder, "deletemenuitem")));
@@ -1298,6 +1581,26 @@ activate (GApplication *app)
   widget2 = (GtkWidget *)gtk_builder_get_object (builder, "totem_like_osd");
   g_object_set_data (G_OBJECT (widget), "osd", widget2);
 
+  widget = (GtkWidget *)gtk_builder_get_object (builder, "textview1");
+  g_signal_connect (widget, "populate-popup",
+                    G_CALLBACK (populate_popup), NULL);
+
+  widget = (GtkWidget *)gtk_builder_get_object (builder, "open_popover");
+  widget2 = (GtkWidget *)gtk_builder_get_object (builder, "open_popover_entry");
+  widget3 = (GtkWidget *)gtk_builder_get_object (builder, "open_popover_button");
+  gtk_popover_set_default_widget (GTK_POPOVER (widget), widget3);
+  g_signal_connect (widget2, "notify::text", G_CALLBACK (open_popover_text_changed), widget3);
+  g_signal_connect_swapped (widget3, "clicked", G_CALLBACK (gtk_widget_hide), widget);
+
+  widget = (GtkWidget *)gtk_builder_get_object (builder, "lockbox");
+  widget2 = (GtkWidget *)gtk_builder_get_object (builder, "lockbutton");
+  permission = g_object_new (g_test_permission_get_type (), NULL);
+  g_object_bind_property (permission, "allowed",
+                          widget, "sensitive",
+                          G_BINDING_SYNC_CREATE);
+  gtk_lock_button_set_permission (GTK_LOCK_BUTTON (widget2), permission);
+  g_object_unref (permission);
+
   gtk_widget_show_all (GTK_WIDGET (window));
 
   g_object_unref (builder);
@@ -1307,6 +1610,7 @@ int
 main (int argc, char *argv[])
 {
   GtkApplication *app;
+  GAction *action;
   static GActionEntry app_entries[] = {
     { "about", activate_about, NULL, NULL, NULL },
     { "quit", activate_quit, NULL, NULL, NULL },
@@ -1324,6 +1628,8 @@ main (int argc, char *argv[])
   g_action_map_add_action_entries (G_ACTION_MAP (app),
                                    app_entries, G_N_ELEMENTS (app_entries),
                                    app);
+  action = g_action_map_lookup_action (G_ACTION_MAP (app), "wine");
+  g_simple_action_set_enabled (G_SIMPLE_ACTION (action), FALSE);
 
   g_signal_connect (app, "activate", G_CALLBACK (activate), NULL);
 

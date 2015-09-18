@@ -214,12 +214,12 @@ translate_device_classes (GdkDisplay      *display,
         case XIKeyClass:
           {
             XIKeyClassInfo *key_info = (XIKeyClassInfo *) class_info;
-            gint i;
+            gint j;
 
             _gdk_device_set_keys (device, key_info->num_keycodes);
 
-            for (i = 0; i < key_info->num_keycodes; i++)
-              gdk_device_set_key (device, i, key_info->keycodes[i], 0);
+            for (j = 0; j < key_info->num_keycodes; j++)
+              gdk_device_set_key (device, j, key_info->keycodes[j], 0);
           }
           break;
         case XIValuatorClass:
@@ -301,6 +301,65 @@ is_touch_device (XIAnyClassInfo **classes,
   return FALSE;
 }
 
+static gboolean
+get_device_ids (GdkDisplay    *display,
+                XIDeviceInfo  *info,
+                gchar        **vendor_id,
+                gchar        **product_id)
+{
+  gulong nitems, bytes_after;
+  guint32 *data;
+  int rc, format;
+  Atom type;
+
+  gdk_x11_display_error_trap_push (display);
+
+  rc = XIGetProperty (GDK_DISPLAY_XDISPLAY (display),
+                      info->deviceid,
+                      gdk_x11_get_xatom_by_name_for_display (display, "Device Product ID"),
+                      0, 2, False, XA_INTEGER, &type, &format, &nitems, &bytes_after,
+                      (guchar **) &data);
+  gdk_x11_display_error_trap_pop_ignored (display);
+
+  if (rc != Success || type != XA_INTEGER || format != 32 || nitems != 2)
+    return FALSE;
+
+  if (vendor_id)
+    *vendor_id = g_strdup_printf ("%.4x", data[0]);
+  if (product_id)
+    *product_id = g_strdup_printf ("%.4x", data[1]);
+
+  XFree (data);
+
+  return TRUE;
+}
+
+static gboolean
+is_touchpad_device (GdkDisplay   *display,
+                    XIDeviceInfo *info)
+{
+  gulong nitems, bytes_after;
+  guint32 *data;
+  int rc, format;
+  Atom type;
+
+  gdk_x11_display_error_trap_push (display);
+
+  rc = XIGetProperty (GDK_DISPLAY_XDISPLAY (display),
+                      info->deviceid,
+                      gdk_x11_get_xatom_by_name_for_display (display, "libinput Tapping Enabled"),
+                      0, 1, False, XA_INTEGER, &type, &format, &nitems, &bytes_after,
+                      (guchar **) &data);
+  gdk_x11_display_error_trap_pop_ignored (display);
+
+  if (rc != Success || type != XA_INTEGER || format != 8 || nitems != 1)
+    return FALSE;
+
+  XFree (data);
+
+  return TRUE;
+}
+
 static GdkDevice *
 create_device (GdkDeviceManager *device_manager,
                GdkDisplay       *display,
@@ -312,9 +371,12 @@ create_device (GdkDeviceManager *device_manager,
   GdkDevice *device;
   GdkInputMode mode;
   gint num_touches = 0;
+  gchar *vendor_id = NULL, *product_id = NULL;
 
   if (dev->use == XIMasterKeyboard || dev->use == XISlaveKeyboard)
     input_source = GDK_SOURCE_KEYBOARD;
+  else if (is_touchpad_device (display, dev))
+    input_source = GDK_SOURCE_TOUCHPAD;
   else if (dev->use == XISlavePointer &&
            is_touch_device (dev->classes, dev->num_classes, &touch_source, &num_touches))
     input_source = touch_source;
@@ -370,6 +432,10 @@ create_device (GdkDeviceManager *device_manager,
                          num_touches);
             }));
 
+  if (dev->use != XIMasterKeyboard &&
+      dev->use != XIMasterPointer)
+    get_device_ids (display, dev, &vendor_id, &product_id);
+
   device = g_object_new (GDK_TYPE_X11_DEVICE_XI2,
                          "name", dev->name,
                          "type", type,
@@ -379,9 +445,13 @@ create_device (GdkDeviceManager *device_manager,
                          "display", display,
                          "device-manager", device_manager,
                          "device-id", dev->deviceid,
+                         "vendor-id", vendor_id,
+                         "product-id", product_id,
                          NULL);
 
   translate_device_classes (display, device, dev->classes, dev->num_classes);
+  g_free (vendor_id);
+  g_free (product_id);
 
   return device;
 }
@@ -768,6 +838,7 @@ handle_device_changed (GdkX11DeviceManagerXI2 *device_manager,
     {
       _gdk_device_reset_axes (device);
       _gdk_device_xi2_unset_scroll_valuators ((GdkX11DeviceXI2 *) device);
+      gdk_x11_device_xi2_store_axes (GDK_X11_DEVICE_XI2 (device), NULL, 0);
       translate_device_classes (display, device, ev->classes, ev->num_classes);
 
       g_signal_emit_by_name (G_OBJECT (device), "changed");
@@ -932,13 +1003,16 @@ translate_axes (GdkDevice       *device,
   axes = g_new0 (gdouble, n_axes);
   vals = valuators->values;
 
-  for (i = 0; i < valuators->mask_len * 8; i++)
+  for (i = 0; i < MIN (valuators->mask_len * 8, n_axes); i++)
     {
       GdkAxisUse use;
       gdouble val;
 
       if (!XIMaskIsSet (valuators->mask, i))
-        continue;
+        {
+          axes[i] = gdk_x11_device_xi2_get_last_axis_value (GDK_X11_DEVICE_XI2 (device), i);
+          continue;
+        }
 
       use = gdk_device_get_axis_use (device, i);
       val = *vals++;
@@ -962,6 +1036,8 @@ translate_axes (GdkDevice       *device,
           break;
         }
     }
+
+  gdk_x11_device_xi2_store_axes (GDK_X11_DEVICE_XI2 (device), axes, n_axes);
 
   return axes;
 }
@@ -1502,11 +1578,9 @@ gdk_x11_device_manager_xi2_translate_event (GdkEventTranslator *translator,
 
         if (gdk_device_get_mode (event->motion.device) == GDK_MODE_WINDOW)
           {
-            GdkDevice *device = event->motion.device;
-
             /* Update event coordinates from axes */
-            gdk_device_get_axis (device, event->motion.axes, GDK_AXIS_X, &event->motion.x);
-            gdk_device_get_axis (device, event->motion.axes, GDK_AXIS_Y, &event->motion.y);
+            gdk_device_get_axis (event->motion.device, event->motion.axes, GDK_AXIS_X, &event->motion.x);
+            gdk_device_get_axis (event->motion.device, event->motion.axes, GDK_AXIS_Y, &event->motion.y);
           }
       }
       break;

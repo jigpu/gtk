@@ -183,10 +183,6 @@ GDK_AVAILABLE_IN_3_2
 void gtk_drag_source_set_icon_gicon   (GtkWidget       *widget,
 				       GIcon           *icon);
 
-/* There probably should be functions for setting the targets
- * as a GtkTargetList
- */
-
 GDK_AVAILABLE_IN_3_10
 GdkDragContext *gtk_drag_begin_with_coordinates (GtkWidget         *widget,
                                                  GtkTargetList     *targets,
@@ -203,8 +199,9 @@ GdkDragContext *gtk_drag_begin (GtkWidget         *widget,
 				gint               button,
 				GdkEvent          *event);
 
-/* Set the image being dragged around
- */
+GDK_AVAILABLE_IN_3_16
+void gtk_drag_cancel           (GdkDragContext *context);
+
 GDK_AVAILABLE_IN_ALL
 void gtk_drag_set_icon_widget (GdkDragContext *context,
 			       GtkWidget      *widget,
@@ -244,11 +241,6 @@ gboolean gtk_drag_check_threshold (GtkWidget *widget,
 				   gint       current_x,
 				   gint       current_y);
 
-/* Internal functions */
-void _gtk_drag_source_handle_event (GtkWidget *widget,
-				    GdkEvent  *event);
-void _gtk_drag_dest_handle_event (GtkWidget *toplevel,
-				  GdkEvent  *event);
 
 G_END_DECLS
 

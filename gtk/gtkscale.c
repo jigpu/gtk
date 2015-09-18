@@ -105,7 +105,8 @@ enum {
   PROP_DIGITS,
   PROP_DRAW_VALUE,
   PROP_HAS_ORIGIN,
-  PROP_VALUE_POS
+  PROP_VALUE_POS,
+  LAST_PROP
 };
 
 enum {
@@ -113,6 +114,7 @@ enum {
   LAST_SIGNAL
 };
 
+static GParamSpec *properties[LAST_PROP];
 static guint signals[LAST_SIGNAL];
 
 static void     gtk_scale_set_property            (GObject        *object,
@@ -295,38 +297,37 @@ gtk_scale_class_init (GtkScaleClass *class)
                   G_TYPE_STRING, 1,
                   G_TYPE_DOUBLE);
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_DIGITS,
-                                   g_param_spec_int ("digits",
-                                                     P_("Digits"),
-                                                     P_("The number of decimal places that are displayed in the value"),
-                                                     -1, MAX_DIGITS, 1,
-                                                     GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
-  
-  g_object_class_install_property (gobject_class,
-                                   PROP_DRAW_VALUE,
-                                   g_param_spec_boolean ("draw-value",
-                                                         P_("Draw Value"),
-                                                         P_("Whether the current value is displayed as a string next to the slider"),
-                                                         TRUE,
-                                                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_DIGITS] =
+      g_param_spec_int ("digits",
+                        P_("Digits"),
+                        P_("The number of decimal places that are displayed in the value"),
+                        -1, MAX_DIGITS,
+                        1,
+                        GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_HAS_ORIGIN,
-                                   g_param_spec_boolean ("has-origin",
-                                                         P_("Has Origin"),
-                                                         P_("Whether the scale has an origin"),
-                                                         TRUE,
-                                                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_DRAW_VALUE] =
+      g_param_spec_boolean ("draw-value",
+                            P_("Draw Value"),
+                            P_("Whether the current value is displayed as a string next to the slider"),
+                            TRUE,
+                            GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
 
-  g_object_class_install_property (gobject_class,
-                                   PROP_VALUE_POS,
-                                   g_param_spec_enum ("value-pos",
-                                                      P_("Value Position"),
-                                                      P_("The position in which the current value is displayed"),
-                                                      GTK_TYPE_POSITION_TYPE,
-                                                      GTK_POS_TOP,
-                                                      GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+  properties[PROP_HAS_ORIGIN] =
+      g_param_spec_boolean ("has-origin",
+                            P_("Has Origin"),
+                            P_("Whether the scale has an origin"),
+                            TRUE,
+                            GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
+
+  properties[PROP_VALUE_POS] =
+      g_param_spec_enum ("value-pos",
+                         P_("Value Position"),
+                         P_("The position in which the current value is displayed"),
+                         GTK_TYPE_POSITION_TYPE,
+                         GTK_POS_TOP,
+                         GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY);
+
+  g_object_class_install_properties (gobject_class, LAST_PROP, properties);
 
   gtk_widget_class_install_style_property (widget_class,
                                            g_param_spec_int ("slider-length",
@@ -663,7 +664,7 @@ gtk_scale_set_digits (GtkScale *scale,
       _gtk_scale_clear_layout (scale);
       gtk_widget_queue_resize (GTK_WIDGET (scale));
 
-      g_object_notify (G_OBJECT (scale), "digits");
+      g_object_notify_by_pspec (G_OBJECT (scale), properties[PROP_DIGITS]);
     }
 }
 
@@ -715,7 +716,7 @@ gtk_scale_set_draw_value (GtkScale *scale,
 
       gtk_widget_queue_resize (GTK_WIDGET (scale));
 
-      g_object_notify (G_OBJECT (scale), "draw-value");
+      g_object_notify_by_pspec (G_OBJECT (scale), properties[PROP_DRAW_VALUE]);
     }
 }
 
@@ -762,7 +763,7 @@ gtk_scale_set_has_origin (GtkScale *scale,
 
       gtk_widget_queue_draw (GTK_WIDGET (scale));
 
-      g_object_notify (G_OBJECT (scale), "has-origin");
+      g_object_notify_by_pspec (G_OBJECT (scale), properties[PROP_HAS_ORIGIN]);
     }
 }
 
@@ -811,7 +812,7 @@ gtk_scale_set_value_pos (GtkScale        *scale,
       if (gtk_widget_get_visible (widget) && gtk_widget_get_mapped (widget))
 	gtk_widget_queue_resize (widget);
 
-      g_object_notify (G_OBJECT (scale), "value-pos");
+      g_object_notify_by_pspec (G_OBJECT (scale), properties[PROP_VALUE_POS]);
     }
 }
 
@@ -875,31 +876,28 @@ gtk_scale_get_range_border (GtkRange  *range,
 
   if (priv->marks)
     {
-      gint slider_width;
       gint value_spacing;
       gint n1, w1, h1, n2, w2, h2;
-  
-      gtk_widget_style_get (widget, 
-                            "slider-width", &slider_width,
-                            "value-spacing", &value_spacing, 
-                            NULL);
 
+      gtk_widget_style_get (widget,
+                            "value-spacing", &value_spacing,
+                            NULL);
 
       gtk_scale_get_mark_label_size (scale, GTK_POS_TOP, &n1, &w1, &h1, &n2, &w2, &h2);
 
       if (gtk_orientable_get_orientation (GTK_ORIENTABLE (scale)) == GTK_ORIENTATION_HORIZONTAL)
         {
-          if (n1 > 0)
-            border->top += h1 + value_spacing + slider_width / 4;
-          if (n2 > 0)
-            border->bottom += h2 + value_spacing + slider_width / 4;
+          if (h1 > 0)
+            border->top += h1 + value_spacing;
+          if (h2 > 0)
+            border->bottom += h2 + value_spacing;
         }
       else
         {
-          if (n1 > 0)
-            border->left += w1 + value_spacing + slider_width / 4;
-          if (n2 > 0)
-            border->right += w2 + value_spacing + slider_width / 4;
+          if (w1 > 0)
+            border->left += w1 + value_spacing;
+          if (w2 > 0)
+            border->right += w2 + value_spacing;
         }
     }
 }
@@ -1127,11 +1125,6 @@ gtk_scale_draw (GtkWidget *widget,
                         "value-spacing", &value_spacing,
                         NULL);
 
-  /* We need to chain up _first_ so the various geometry members of
-   * GtkRange struct are updated.
-   */
-  GTK_WIDGET_CLASS (gtk_scale_parent_class)->draw (widget, cr);
-
   if (priv->marks)
     {
       GtkOrientation orientation;
@@ -1161,15 +1154,15 @@ gtk_scale_draw (GtkWidget *widget,
               x1 = marks[i];
               if (mark->position == GTK_POS_TOP)
                 {
-                  y1 = range_rect.y;
-                  y2 = y1 - slider_width / 4;
+                  y1 = range_rect.y + slider_width / 4;
+                  y2 = range_rect.y;
                   min_pos = min_pos_before;
                   max_pos = find_next_pos (widget, m, marks + i, GTK_POS_TOP) - min_sep;
                 }
               else
                 {
-                  y1 = range_rect.y + range_rect.height;
-                  y2 = y1 + slider_width / 4;
+                  y1 = range_rect.y + range_rect.height - slider_width / 4;
+                  y2 = range_rect.y + range_rect.height;
                   min_pos = min_pos_after;
                   max_pos = find_next_pos (widget, m, marks + i, GTK_POS_BOTTOM) - min_sep;
                 }
@@ -1213,15 +1206,15 @@ gtk_scale_draw (GtkWidget *widget,
             {
               if (mark->position == GTK_POS_TOP)
                 {
-                  x1 = range_rect.x;
-                  x2 = range_rect.x - slider_width / 4;
+                  x1 = range_rect.x + slider_width / 4;
+                  x2 = range_rect.x;
                   min_pos = min_pos_before;
                   max_pos = find_next_pos (widget, m, marks + i, GTK_POS_TOP) - min_sep;
                 }
               else
                 {
-                  x1 = range_rect.x + range_rect.width;
-                  x2 = range_rect.x + range_rect.width + slider_width / 4;
+                  x1 = range_rect.x + range_rect.width - slider_width / 4;
+                  x2 = range_rect.x + range_rect.width;
                   min_pos = min_pos_after;
                   max_pos = find_next_pos (widget, m, marks + i, GTK_POS_BOTTOM) - min_sep;
                 }
@@ -1267,6 +1260,8 @@ gtk_scale_draw (GtkWidget *widget,
       g_object_unref (layout);
       g_free (marks);
     }
+
+  GTK_WIDGET_CLASS (gtk_scale_parent_class)->draw (widget, cr);
 
   if (priv->draw_value)
     {
@@ -1690,87 +1685,72 @@ marks_start_element (GMarkupParseContext *context,
                      gpointer             user_data,
                      GError             **error)
 {
-  MarksSubparserData *parser_data = (MarksSubparserData*)user_data;
-  guint i;
-  gint line_number, char_number;
+  MarksSubparserData *data = (MarksSubparserData*)user_data;
 
   if (strcmp (element_name, "marks") == 0)
-   ;
+    {
+      if (!_gtk_builder_check_parent (data->builder, context, "object", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_INVALID, NULL, NULL,
+                                        G_MARKUP_COLLECT_INVALID))
+        _gtk_builder_prefix_error (data->builder, context, error);
+    }
   else if (strcmp (element_name, "mark") == 0)
     {
+      const gchar *value_str;
       gdouble value = 0;
-      gboolean has_value = FALSE;
+      const gchar *position_str = NULL;
       GtkPositionType position = GTK_POS_BOTTOM;
       const gchar *msg_context = NULL;
       gboolean translatable = FALSE;
       MarkData *mark;
 
-      for (i = 0; names[i]; i++)
+      if (!_gtk_builder_check_parent (data->builder, context, "marks", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_STRING, "value", &value_str,
+                                        G_MARKUP_COLLECT_BOOLEAN|G_MARKUP_COLLECT_OPTIONAL, "translatable", &translatable,
+                                        G_MARKUP_COLLECT_STRING|G_MARKUP_COLLECT_OPTIONAL, "comments", NULL,
+                                        G_MARKUP_COLLECT_STRING|G_MARKUP_COLLECT_OPTIONAL, "context", &msg_context,
+                                        G_MARKUP_COLLECT_STRING|G_MARKUP_COLLECT_OPTIONAL, "position", &position_str,
+                                        G_MARKUP_COLLECT_INVALID))
         {
-          if (strcmp (names[i], "translatable") == 0)
-            {
-              if (!_gtk_builder_boolean_from_string (values[i], &translatable, error))
-                return;
-            }
-          else if (strcmp (names[i], "comments") == 0)
-            {
-              /* do nothing, comments are for translators */
-            }
-          else if (strcmp (names[i], "context") == 0)
-            msg_context = values[i];
-          else if (strcmp (names[i], "value") == 0)
-            {
-              GValue gvalue = G_VALUE_INIT;
-
-              if (!gtk_builder_value_from_string_type (parser_data->builder, G_TYPE_DOUBLE, values[i], &gvalue, error))
-                return;
-
-              value = g_value_get_double (&gvalue);
-              has_value = TRUE;
-            }
-          else if (strcmp (names[i], "position") == 0)
-            {
-              GValue gvalue = G_VALUE_INIT;
-
-              if (!gtk_builder_value_from_string_type (parser_data->builder, GTK_TYPE_POSITION_TYPE, values[i], &gvalue, error))
-                return;
-
-              position = g_value_get_enum (&gvalue);
-            }
-          else
-            {
-              g_markup_parse_context_get_position (context,
-                                                   &line_number,
-                                                   &char_number);
-              g_set_error (error,
-                           GTK_BUILDER_ERROR,
-                           GTK_BUILDER_ERROR_INVALID_ATTRIBUTE,
-                           "%s:%d:%d '%s' is not a valid attribute of <%s>",
-                           "<input>",
-                           line_number, char_number, names[i], "mark");
-              return;
-            }
+          _gtk_builder_prefix_error (data->builder, context, error);
+          return;
         }
 
-      if (!has_value)
+      if (value_str != NULL)
         {
-          g_markup_parse_context_get_position (context,
-                                               &line_number,
-                                               &char_number);
-          g_set_error (error,
-                       GTK_BUILDER_ERROR,
-                       GTK_BUILDER_ERROR_MISSING_ATTRIBUTE,
-                       "%s:%d:%d <%s> requires attribute \"%s\"",
-                       "<input>",
-                       line_number, char_number, "mark",
-                       "value");
-          return;
+          GValue gvalue = G_VALUE_INIT;
+
+          if (!gtk_builder_value_from_string_type (data->builder, G_TYPE_DOUBLE, value_str, &gvalue, error))
+            {
+              _gtk_builder_prefix_error (data->builder, context, error);
+              return;
+            }
+
+          value = g_value_get_double (&gvalue);
+        }
+
+      if (position_str != NULL)
+        {
+          GValue gvalue = G_VALUE_INIT;
+
+          if (!gtk_builder_value_from_string_type (data->builder, GTK_TYPE_POSITION_TYPE, position_str, &gvalue, error))
+            {
+              _gtk_builder_prefix_error (data->builder, context, error);
+              return;
+            }
+
+          position = g_value_get_enum (&gvalue);
         }
 
       mark = g_slice_new (MarkData);
       mark->value = value;
-      if (position == GTK_POS_LEFT ||
-          position == GTK_POS_TOP)
+      if (position == GTK_POS_LEFT || position == GTK_POS_TOP)
         mark->position = GTK_POS_TOP;
       else
         mark->position = GTK_POS_BOTTOM;
@@ -1778,20 +1758,13 @@ marks_start_element (GMarkupParseContext *context,
       mark->context = g_strdup (msg_context);
       mark->translatable = translatable;
 
-      parser_data->marks = g_slist_prepend (parser_data->marks, mark);
+      data->marks = g_slist_prepend (data->marks, mark);
     }
   else
     {
-      g_markup_parse_context_get_position (context,
-                                           &line_number,
-                                           &char_number);
-      g_set_error (error,
-                   GTK_BUILDER_ERROR,
-                   GTK_BUILDER_ERROR_MISSING_ATTRIBUTE,
-                   "%s:%d:%d unsupported tag for GtkScale: \"%s\"",
-                   "<input>",
-                   line_number, char_number, element_name);
-      return;
+      _gtk_builder_error_unhandled_tag (data->builder, context,
+                                        "GtkScale", element_name,
+                                        error);
     }
 }
 
@@ -1826,26 +1799,28 @@ gtk_scale_buildable_custom_tag_start (GtkBuildable  *buildable,
                                       GObject       *child,
                                       const gchar   *tagname,
                                       GMarkupParser *parser,
-                                      gpointer      *data)
+                                      gpointer      *parser_data)
 {
-  MarksSubparserData *parser_data;
+  MarksSubparserData *data;
 
   if (child)
     return FALSE;
 
   if (strcmp (tagname, "marks") == 0)
     {
-      parser_data = g_slice_new0 (MarksSubparserData);
-      parser_data->scale = GTK_SCALE (buildable);
-      parser_data->marks = NULL;
+      data = g_slice_new0 (MarksSubparserData);
+      data->scale = GTK_SCALE (buildable);
+      data->builder = builder;
+      data->marks = NULL;
 
       *parser = marks_parser;
-      *data = parser_data;
+      *parser_data = data;
+
       return TRUE;
     }
 
   return parent_buildable_iface->custom_tag_start (buildable, builder, child,
-                                                   tagname, parser, data);
+                                                   tagname, parser, parser_data);
 }
 
 static void

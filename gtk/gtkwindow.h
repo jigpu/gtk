@@ -65,6 +65,8 @@ struct _GtkWindow
  * @activate_default: Activates the default widget for the window.
  * @keys_changed: Signal gets emitted when the set of accelerators or
  *   mnemonics that are associated with window changes.
+ * @enable_debugging: Class handler for the #GtkWindow::enable-debugging
+ *   keybinding signal. Since: 3.14
  */
 struct _GtkWindowClass
 {
@@ -385,6 +387,10 @@ GDK_AVAILABLE_IN_ALL
 void     gtk_window_fullscreen    (GtkWindow *window);
 GDK_AVAILABLE_IN_ALL
 void     gtk_window_unfullscreen  (GtkWindow *window);
+GDK_AVAILABLE_IN_3_18
+void     gtk_window_fullscreen_on_monitor(GtkWindow *window,
+                                          GdkScreen *screen,
+                                          gint monitor);
 GDK_AVAILABLE_IN_3_10
 void     gtk_window_close         (GtkWindow *window);
 GDK_AVAILABLE_IN_ALL

@@ -73,7 +73,7 @@ gdk_win32_gl_context_class_init (GdkWin32GLContextClass *klass)
   GObjectClass *gobject_class = G_OBJECT_CLASS (klass);
 
   context_class->end_frame = _gdk_win32_gl_context_end_frame;
-  context_class->upload_texture = _gdk_win32_gl_context_upload_texture;
+  context_class->realize = _gdk_win32_gl_context_realize;
 
   gobject_class->dispose = _gdk_win32_gl_context_dispose;
 }
@@ -116,8 +116,6 @@ _gdk_win32_gl_context_end_frame (GdkGLContext *context,
 
   if (context_win32->do_frame_sync)
     {
-      guint32 end_frame_counter = 0;
-
       if (context_win32->do_frame_sync)
         {
           glFinish ();
@@ -156,7 +154,6 @@ _gdk_win32_window_invalidate_for_new_frame (GdkWindow *window,
                                             cairo_region_t *update_area)
 {
   cairo_rectangle_int_t window_rect;
-  unsigned int buffer_age;
   gboolean invalidate_all = FALSE;
   GdkWin32GLContext *context_win32;
   cairo_rectangle_int_t whole_window = { 0, 0, gdk_window_get_width (window), gdk_window_get_height (window) };
@@ -187,22 +184,6 @@ _gdk_win32_window_invalidate_for_new_frame (GdkWindow *window,
          buffer is fully up-to-date for the swapbuffer */
       cairo_region_union_rectangle (update_area, &window_rect);
     }
-}
-
-void
-_gdk_win32_gl_context_upload_texture (GdkGLContext *context,
-                                      cairo_surface_t *image_surface,
-                                      int width,
-                                      int height,
-                                      guint texture_target)
-{
-  g_return_if_fail (GDK_WIN32_IS_GL_CONTEXT (context));
-
-  glPixelStorei (GL_UNPACK_ALIGNMENT, 4);
-  glPixelStorei (GL_UNPACK_ROW_LENGTH, cairo_image_surface_get_stride (image_surface)/4);
-  glTexImage2D (texture_target, 0, GL_RGBA, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE,
-                cairo_image_surface_get_data (image_surface));
-  glPixelStorei (GL_UNPACK_ROW_LENGTH, 0);
 }
 
 typedef struct
@@ -247,7 +228,6 @@ static void
 _get_dummy_window_hwnd (GdkWGLDummy *dummy)
 {
   WNDCLASSEX dummy_wc;
-  HWND dummy_hwnd;
 
   memset (&dummy_wc, 0, sizeof (WNDCLASSEX));
 
@@ -286,10 +266,7 @@ _get_wgl_pfd (HDC hdc,
               const gboolean need_alpha_bits,
               PIXELFORMATDESCRIPTOR *pfd)
 {
-  gint configs;
-  gint i;
   gint best_pf = 0;
-  gboolean alpha_check;
 
   pfd->nSize = sizeof (PIXELFORMATDESCRIPTOR);
   pfd->nVersion = 1;
@@ -354,8 +331,6 @@ _gdk_win32_display_init_gl (GdkDisplay *display,
                             const gboolean need_alpha_bits)
 {
   GdkWin32Display *display_win32 = GDK_WIN32_DISPLAY (display);
-  gint glMajMinVersion;
-  GdkWindowImplWin32 *impl;
   gint best_idx = 0;
   GdkWGLDummy dummy;
 
@@ -404,52 +379,42 @@ _gdk_win32_display_init_gl (GdkDisplay *display,
 }
 
 static HGLRC
-_create_gl_context (HDC hdc, GdkGLContext *share, GdkGLProfile profile)
+_create_gl_context (HDC hdc,
+                    GdkGLContext *share,
+                    int flags,
+                    int major,
+                    int minor)
 {
+  /* we still need a legacy WGL context first for all cases */
+  HGLRC hglrc_base;
+  /* This is the actual WGL context that we want */
   HGLRC hglrc;
+  GdkWin32GLContext *context_win32;
 
-  /* we need a legacy context first, for all cases */
-  hglrc = wglCreateContext (hdc);
+  gint attribs[] = {
+    WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
+    WGL_CONTEXT_MAJOR_VERSION_ARB, major,
+    WGL_CONTEXT_MINOR_VERSION_ARB, minor,
+    WGL_CONTEXT_FLAGS_ARB, flags,
+    0
+  };
 
-  /* Create a WGL 3.2 context, the legacy context *is* needed here */
-  if (profile == GDK_GL_PROFILE_3_2_CORE)
-    {
-      HGLRC hglrc_32;
-      GdkWin32GLContext *context_win32;
+  hglrc_base = wglCreateContext (hdc);
 
-      gint attribs[] = {
-        WGL_CONTEXT_PROFILE_MASK_ARB,  WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-        WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-        WGL_CONTEXT_MINOR_VERSION_ARB, 2,
-        0
-      };
+  if (!wglMakeCurrent (hdc, hglrc_base))
+    return NULL;
 
-      if (!wglMakeCurrent (hdc, hglrc))
-        return NULL;
+  if (share != NULL)
+    context_win32 = GDK_WIN32_GL_CONTEXT (share);
 
-      if (share != NULL)
-        context_win32 = GDK_WIN32_GL_CONTEXT (share);
+  hglrc = wglCreateContextAttribsARB (hdc,
+                                      share != NULL ? context_win32->hglrc : NULL,
+                                      attribs);
 
-      hglrc_32 = wglCreateContextAttribsARB (hdc,
-                                          share != NULL ? context_win32->hglrc : NULL,
-                                          attribs);
+  wglMakeCurrent (NULL, NULL);
+  wglDeleteContext (hglrc_base);
 
-      wglMakeCurrent (NULL, NULL);
-      wglDeleteContext (hglrc);
-      return hglrc_32;
-    }
-  else
-    {
-      /* for legacy WGL, we can't share lists during context creation,
-       * so do so immediately afterwards
-       */
-      if (share != NULL)
-        {
-          HGLRC hglrc_shared = GDK_WIN32_GL_CONTEXT (share)->hglrc;
-          wglShareLists (hglrc_shared, hglrc);
-        }
-      return hglrc;
-    }
+  return hglrc;
 }
 
 static gboolean
@@ -473,10 +438,74 @@ _set_pixformat_for_hdc (HDC hdc,
   return TRUE;
 }
 
+gboolean
+_gdk_win32_gl_context_realize (GdkGLContext *context,
+                               GError **error)
+{
+  GdkGLContext *share = gdk_gl_context_get_shared_context (context);
+  GdkWin32GLContext *context_win32 = GDK_WIN32_GL_CONTEXT (context);
+
+  /* These are the real WGL context items that we will want to use later */
+  HGLRC hglrc;
+  gint pixel_format;
+  gboolean debug_bit, compat_bit;
+
+  /* request flags and specific versions for core (3.2+) WGL context */
+  gint flags = 0;
+  gint glver_major = 0;
+  gint glver_minor = 0;
+
+  if (!_set_pixformat_for_hdc (context_win32->gl_hdc,
+                               &pixel_format,
+                               context_win32->need_alpha_bits))
+    {
+      g_set_error_literal (error, GDK_GL_ERROR,
+                           GDK_GL_ERROR_UNSUPPORTED_FORMAT,
+                           _("No available configurations for the given pixel format"));
+      return FALSE;
+    }
+
+  gdk_gl_context_get_required_version (context, &glver_major, &glver_minor);
+  debug_bit = gdk_gl_context_get_debug_enabled (context);
+  compat_bit = gdk_gl_context_get_forward_compatible (context);
+
+  if (debug_bit)
+    flags |= WGL_CONTEXT_DEBUG_BIT_ARB;
+  if (compat_bit)
+    flags |= WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB;
+
+  GDK_NOTE (OPENGL,
+            g_print ("Creating core WGL context (version:%d.%d, debug:%s, forward:%s)\n",
+            glver_major, glver_minor,
+            debug_bit ? "yes" : "no",
+            compat_bit ? "yes" : "no"));
+
+  hglrc = _create_gl_context (context_win32->gl_hdc,
+                              share,
+                              flags,
+                              glver_major,
+                              glver_minor);
+  if (hglrc == NULL)
+    {
+      g_set_error_literal (error, GDK_GL_ERROR,
+                           GDK_GL_ERROR_NOT_AVAILABLE,
+                           _("Unable to create a GL context"));
+      return FALSE;
+    }
+
+  GDK_NOTE (OPENGL,
+            g_print ("Created WGL context[%p], pixel_format=%d\n",
+                     hglrc,
+                     pixel_format));
+
+  context_win32->hglrc = hglrc;
+
+  return TRUE;
+}
+
 GdkGLContext *
 _gdk_win32_window_create_gl_context (GdkWindow *window,
                                      gboolean attached,
-                                     GdkGLProfile profile,
                                      GdkGLContext *share,
                                      GError **error)
 {
@@ -485,18 +514,11 @@ _gdk_win32_window_create_gl_context (GdkWindow *window,
   GdkWin32GLContext *context = NULL;
   GdkVisual *visual = gdk_window_get_visual (window);
 
-  /* XXX: gdk_screen_get_rgba_visual() is not implemented on Windows, so
-   * need_alpha_bits will always be FALSE for now.
-   *
-   * Please see bug https://bugzilla.gnome.org/show_bug.cgi?id=727316
-   */
   gboolean need_alpha_bits = (visual == gdk_screen_get_rgba_visual (gdk_display_get_default_screen (display)));
 
-  /* Real GL Context and Window items */
+  /* Acquire and store up the Windows-specific HWND and HDC */
   HWND hwnd;
   HDC hdc;
-  HGLRC hglrc;
-  gint pixel_format;
 
   if (!_gdk_win32_display_init_gl (display, need_alpha_bits))
     {
@@ -506,13 +528,13 @@ _gdk_win32_window_create_gl_context (GdkWindow *window,
       return NULL;
     }
 
-  if (profile == GDK_GL_PROFILE_3_2_CORE &&
-      !display_win32->hasWglARBCreateContext)
+  /* We first check whether we have WGL_ARB_create_context... */
+  if (!display_win32->hasWglARBCreateContext)
     {
       g_set_error_literal (error, GDK_GL_ERROR,
                            GDK_GL_ERROR_UNSUPPORTED_PROFILE,
                            _("The WGL_ARB_create_context extension "
-                             "needed to create 3.2 core profiles is not "
+                             "needed to create core profiles is not "
                              "available"));
       return NULL;
     }
@@ -520,44 +542,16 @@ _gdk_win32_window_create_gl_context (GdkWindow *window,
   hwnd = GDK_WINDOW_HWND (window);
   hdc = GetDC (hwnd);
 
-  if (!_set_pixformat_for_hdc (hdc, &pixel_format, need_alpha_bits))
-    {
-      g_set_error_literal (error, GDK_GL_ERROR,
-                           GDK_GL_ERROR_UNSUPPORTED_FORMAT,
-                           _("No available configurations for the given pixel format"));
-      return NULL;
-    }
-
-  if (profile != GDK_GL_PROFILE_3_2_CORE)
-    profile = GDK_GL_PROFILE_LEGACY;
-
-  hglrc = _create_gl_context (hdc, share, profile);
-
-
-  if (hglrc == NULL)
-    {
-      g_set_error_literal (error, GDK_GL_ERROR,
-                           GDK_GL_ERROR_NOT_AVAILABLE,
-                           _("Unable to create a GL context"));
-      return NULL;
-    }
-
   display_win32->gl_hdc = hdc;
   display_win32->gl_hwnd = hwnd;
-
-  GDK_NOTE (OPENGL,
-            g_print ("Created WGL context[%p], pixel_format=%d\n",
-                     hglrc,
-                     pixel_format));
 
   context = g_object_new (GDK_TYPE_WIN32_GL_CONTEXT,
                           "display", display,
                           "window", window,
-                          "profile", profile,
                           "shared-context", share,
                           NULL);
 
-  context->hglrc = hglrc;
+  context->need_alpha_bits = need_alpha_bits;
   context->gl_hdc = hdc;
   context->is_attached = attached;
 
@@ -601,8 +595,6 @@ _gdk_win32_display_make_gl_context_current (GdkDisplay *display,
        * happens later anyway, and its up to the compositor to sync that
        * to the vblank. */
       screen = gdk_window_get_screen (window);
-
-      /* XXX: gdk_screen_is_composited () is always FALSE on Windows at the moment */
       do_frame_sync = ! gdk_screen_is_composited (screen);
 
       if (do_frame_sync != context_win32->do_frame_sync)

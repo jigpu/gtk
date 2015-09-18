@@ -21,6 +21,8 @@
 #include "gdkscreenprivate.h"
 #include "gdkwin32screen.h"
 
+#include <dwmapi.h>
+
 struct _GdkWin32Screen
 {
   GdkScreen parent_instance;
@@ -154,14 +156,6 @@ gdk_win32_screen_get_monitor_geometry (GdkScreen    *screen,
   *dest = _gdk_monitors[num_monitor].rect;
 }
 
-static GdkVisual *
-gdk_win32_screen_get_rgba_visual (GdkScreen *screen)
-{
-  g_return_val_if_fail (screen == _gdk_screen, NULL);
-
-  return NULL;
-}
-
 static gint
 gdk_win32_screen_get_number (GdkScreen *screen)
 {
@@ -195,9 +189,18 @@ gdk_win32_screen_get_window_stack (GdkScreen *screen)
 static gboolean
 gdk_win32_screen_is_composited (GdkScreen *screen)
 {
+  gboolean is_composited;
   g_return_val_if_fail (GDK_IS_SCREEN (screen), FALSE);
 
-  return FALSE;
+  /* On Windows 8 and later, DWM (composition) is always enabled */
+  if (_is_win8_or_later)
+    return TRUE;
+  else
+    {
+      if (DwmIsCompositionEnabled (&is_composited) != S_OK)
+        return FALSE;
+      return is_composited;
+    }
 }
 
 static void
@@ -234,7 +237,7 @@ gdk_win32_screen_class_init (GdkWin32ScreenClass *klass)
   screen_class->get_monitor_geometry = gdk_win32_screen_get_monitor_geometry;
   screen_class->get_monitor_workarea = gdk_win32_screen_get_monitor_geometry;
   screen_class->get_system_visual = _gdk_win32_screen_get_system_visual;
-  screen_class->get_rgba_visual = gdk_win32_screen_get_rgba_visual;
+  screen_class->get_rgba_visual = _gdk_win32_screen_get_rgba_visual;
   screen_class->is_composited = gdk_win32_screen_is_composited;
   screen_class->make_display_name = gdk_win32_screen_make_display_name;
   screen_class->get_active_window = gdk_win32_screen_get_active_window;

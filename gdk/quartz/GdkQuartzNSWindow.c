@@ -178,6 +178,17 @@
   GdkWindow *window = [[self contentView] gdkWindow];
   GdkEvent *event;
 
+  GdkWindowImplQuartz *impl = GDK_WINDOW_IMPL_QUARTZ (window->impl);
+  gboolean maximized = gdk_window_get_state (window) & GDK_WINDOW_STATE_MAXIMIZED;
+
+  /* In case the window is changed when maximized remove the maximized state */
+  if (maximized && !inMaximizeTransition && !NSEqualRects (lastMaximizedFrame, [self frame]))
+    {
+      gdk_synthesize_window_state (window,
+                                   GDK_WINDOW_STATE_MAXIMIZED,
+                                   0);
+    }
+
   _gdk_quartz_window_update_position (window);
 
   /* Synthesize a configure event */
@@ -198,6 +209,16 @@
   NSRect content_rect = [self contentRectForFrameRect:[self frame]];
   GdkWindow *window = [[self contentView] gdkWindow];
   GdkEvent *event;
+  GdkWindowImplQuartz *impl = GDK_WINDOW_IMPL_QUARTZ (window->impl);
+  gboolean maximized = gdk_window_get_state (window) & GDK_WINDOW_STATE_MAXIMIZED;
+
+  /* see same in windowDidMove */
+  if (maximized && !inMaximizeTransition && !NSEqualRects (lastMaximizedFrame, [self frame]))
+    {
+      gdk_synthesize_window_state (window,
+                                   GDK_WINDOW_STATE_MAXIMIZED,
+                                   0);
+    }
 
   window->width = content_rect.size.width;
   window->height = content_rect.size.height;
@@ -385,9 +406,9 @@
 
 - (BOOL)trackManualResize
 {
-  NSPoint currentLocation;
-  NSRect newFrame;
-  float dx, dy;
+  NSPoint mouse_location;
+  NSRect new_frame;
+  float mdx, mdy, dw, dh, dx, dy;
   NSSize min_size;
 
   if (!inManualResize || inTrackManualResize)
@@ -395,33 +416,72 @@
 
   inTrackManualResize = YES;
 
-  currentLocation = [self convertBaseToScreen:[self mouseLocationOutsideOfEventStream]];
-  currentLocation.x -= initialResizeFrame.origin.x;
-  currentLocation.y -= initialResizeFrame.origin.y;
+  mouse_location = [self convertBaseToScreen:[self mouseLocationOutsideOfEventStream]];
+  mdx = initialResizeLocation.x - mouse_location.x;
+  mdy = initialResizeLocation.y - mouse_location.y;
 
-  dx = currentLocation.x - initialResizeLocation.x;
-  dy = -(currentLocation.y - initialResizeLocation.y);
+  /* Set how a mouse location delta translates to changes in width,
+   * height and position.
+   */
+  dw = dh = dx = dy = 0.0;
+  if (resizeEdge == GDK_WINDOW_EDGE_EAST ||
+      resizeEdge == GDK_WINDOW_EDGE_NORTH_EAST ||
+      resizeEdge == GDK_WINDOW_EDGE_SOUTH_EAST)
+    {
+      dw = -1.0;
+    }
+  if (resizeEdge == GDK_WINDOW_EDGE_NORTH ||
+      resizeEdge == GDK_WINDOW_EDGE_NORTH_WEST ||
+      resizeEdge == GDK_WINDOW_EDGE_NORTH_EAST)
+    {
+      dh = -1.0;
+    }
+  if (resizeEdge == GDK_WINDOW_EDGE_SOUTH ||
+      resizeEdge == GDK_WINDOW_EDGE_SOUTH_WEST ||
+      resizeEdge == GDK_WINDOW_EDGE_SOUTH_EAST)
+    {
+      dh = 1.0;
+      dy = -1.0;
+    }
+  if (resizeEdge == GDK_WINDOW_EDGE_WEST ||
+      resizeEdge == GDK_WINDOW_EDGE_NORTH_WEST ||
+      resizeEdge == GDK_WINDOW_EDGE_SOUTH_WEST)
+    {
+      dw = 1.0;
+      dx = -1.0;
+    }
 
-  newFrame = initialResizeFrame;
-  newFrame.size.width = initialResizeFrame.size.width + dx;
-  newFrame.size.height = initialResizeFrame.size.height + dy;
+  /* Apply changes to the frame captured when we started resizing */
+  new_frame = initialResizeFrame;
+  new_frame.origin.x += mdx * dx;
+  new_frame.origin.y += mdy * dy;
+  new_frame.size.width += mdx * dw;
+  new_frame.size.height += mdy * dh;
 
+  /* In case the resulting window would be too small reduce the
+   * change to both size and position.
+   */
   min_size = [self contentMinSize];
-  if (newFrame.size.width < min_size.width)
-    newFrame.size.width = min_size.width;
-  if (newFrame.size.height < min_size.height)
-    newFrame.size.height = min_size.height;
+
+  if (new_frame.size.width < min_size.width)
+    {
+      if (dx)
+        new_frame.origin.x -= min_size.width - new_frame.size.width;
+      new_frame.size.width = min_size.width;
+    }
+
+  if (new_frame.size.height < min_size.height)
+    {
+      if (dy)
+        new_frame.origin.y -= min_size.height - new_frame.size.height;
+      new_frame.size.height = min_size.height;
+    }
 
   /* We could also apply aspect ratio:
-     newFrame.size.height = newFrame.size.width / [self aspectRatio].width * [self aspectRatio].height;
+     new_frame.size.height = new_frame.size.width / [self aspectRatio].width * [self aspectRatio].height;
   */
 
-  dy = newFrame.size.height - initialResizeFrame.size.height;
-
-  newFrame.origin.x = initialResizeFrame.origin.x;
-  newFrame.origin.y = initialResizeFrame.origin.y - dy;
-
-  [self setFrame:newFrame display:YES];
+  [self setFrame:new_frame display:YES];
 
   /* Let the resizing be handled by GTK+. */
   if (g_main_context_pending (NULL))
@@ -432,17 +492,16 @@
   return YES;
 }
 
--(void)beginManualResize
+-(void)beginManualResize:(GdkWindowEdge)edge
 {
   if (inMove || inManualMove || inManualResize)
     return;
 
   inManualResize = YES;
+  resizeEdge = edge;
 
   initialResizeFrame = [self frame];
   initialResizeLocation = [self convertBaseToScreen:[self mouseLocationOutsideOfEventStream]];
-  initialResizeLocation.x -= initialResizeFrame.origin.x;
-  initialResizeLocation.y -= initialResizeFrame.origin.y;
 }
 
 
@@ -635,6 +694,7 @@ update_context_from_dragging_info (id <NSDraggingInfo> sender)
 - (void)draggedImage:(NSImage *)anImage endedAt:(NSPoint)aPoint operation:(NSDragOperation)operation
 {
   GdkEvent *event;
+  GdkScreen *screen;
 
   g_assert (_gdk_quartz_drag_source_context != NULL);
 
@@ -642,6 +702,33 @@ update_context_from_dragging_info (id <NSDraggingInfo> sender)
   event->dnd.window = g_object_ref ([[self contentView] gdkWindow]);
   event->dnd.send_event = FALSE;
   event->dnd.context = g_object_ref (_gdk_quartz_drag_source_context);
+
+  screen = gdk_window_get_screen (event->dnd.window);
+
+  if (screen)
+    {
+      GList* windows, *list;
+      gint gx, gy;
+
+      event->dnd.context->dest_window = NULL;
+
+      windows = gdk_screen_get_toplevel_windows (screen);
+      _gdk_quartz_window_nspoint_to_gdk_xy (aPoint, &gx, &gy);
+
+      for (list = windows; list; list = list->next)
+        {
+          GdkWindow* win = (GdkWindow*) list->data;
+          gint wx, wy;
+          gint ww, wh;
+
+          gdk_window_get_root_origin (win, &wx, &wy);
+          ww = gdk_window_get_width (win);
+          wh = gdk_window_get_height (win);
+
+          if (gx > wx && gy > wy && gx <= wx + ww && gy <= wy + wh)
+            event->dnd.context->dest_window = win;
+        }
+    }
 
   gdk_event_set_device (event,
                         gdk_drag_context_get_device (_gdk_quartz_drag_source_context));
@@ -672,5 +759,67 @@ update_context_from_dragging_info (id <NSDraggingInfo> sender)
 }
 
 #endif
+
+- (NSRect)constrainFrameRect:(NSRect)frameRect toScreen:(NSScreen *)screen
+{
+  NSRect rect;
+  GdkWindow *window = [[self contentView] gdkWindow];
+  GdkWindowImplQuartz *impl = GDK_WINDOW_IMPL_QUARTZ (window->impl);
+
+  /* Allow the window to move up "shadow_top" more than normally allowed
+   * by the default impl. This makes it possible to move windows with
+   * client side shadow right up to the screen's menu bar. */
+  rect = [super constrainFrameRect:frameRect toScreen:screen];
+  if (frameRect.origin.y > rect.origin.y)
+    rect.origin.y = MIN (frameRect.origin.y, rect.origin.y + impl->shadow_top);
+
+  return rect;
+}
+
+- (NSRect)windowWillUseStandardFrame:(NSWindow *)nsWindow
+                        defaultFrame:(NSRect)newFrame
+{
+  NSRect screenFrame = [[self screen] visibleFrame];
+  GdkWindow *window = [[self contentView] gdkWindow];
+  GdkWindowImplQuartz *impl = GDK_WINDOW_IMPL_QUARTZ (window->impl);
+  gboolean maximized = gdk_window_get_state (window) & GDK_WINDOW_STATE_MAXIMIZED;
+
+  if (!maximized)
+    return screenFrame;
+  else
+    return lastUnmaximizedFrame;
+}
+
+- (BOOL)windowShouldZoom:(NSWindow *)nsWindow
+                 toFrame:(NSRect)newFrame
+{
+
+  GdkWindow *window = [[self contentView] gdkWindow];
+  GdkWindowImplQuartz *impl = GDK_WINDOW_IMPL_QUARTZ (window->impl);
+  gboolean maximized = gdk_window_get_state (window) & GDK_WINDOW_STATE_MAXIMIZED;
+
+  if (maximized)
+    {
+      lastMaximizedFrame = newFrame;
+      gdk_synthesize_window_state (window,
+                                   GDK_WINDOW_STATE_MAXIMIZED,
+                                   0);
+    }
+  else
+    {
+      lastUnmaximizedFrame = [nsWindow frame];
+      gdk_synthesize_window_state (window,
+                                   0,
+                                   GDK_WINDOW_STATE_MAXIMIZED);
+    }
+
+  inMaximizeTransition = YES;
+  return YES;
+}
+
+-(void)windowDidEndLiveResize:(NSNotification *)aNotification
+{
+  inMaximizeTransition = NO;
+}
 
 @end

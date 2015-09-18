@@ -233,7 +233,7 @@
                     <property name="visible">True</property>
                     <property name="orientation">horizontal</property>
                     <child>
-                      <object class="GtkSidebar">
+                      <object class="GtkStackSidebar">
                         <property name="visible">True</property>
                         <property name="stack">object_details</property>
                       </object>
@@ -317,6 +317,15 @@
                           <packing>
                             <property name="name">style-properties</property>
                             <property name="title" translatable="yes">Style Properties</property>
+                          </packing>
+                        </child>
+                        <child>
+                          <object class="GtkInspectorCssNodeTree" id="widget_css_node_tree">
+                            <property name="visible">True</property>
+                          </object>
+                          <packing>
+                            <property name="name">css-nodes</property>
+                            <property name="title" translatable="yes">CSS nodes</property>
                           </packing>
                         </child>
                         <child>

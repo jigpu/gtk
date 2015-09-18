@@ -19,6 +19,8 @@
 
 #include "gtkcssmatcherprivate.h"
 
+#include "gtkcssnodedeclarationprivate.h"
+#include "gtkcssnodeprivate.h"
 #include "gtkwidgetpath.h"
 
 /* GTK_CSS_MATCHER_WIDGET_PATH */
@@ -31,6 +33,7 @@ gtk_css_matcher_widget_path_get_parent (GtkCssMatcher       *matcher,
     return FALSE;
 
   matcher->path.klass = child->path.klass;
+  matcher->path.decl = NULL;
   matcher->path.path = child->path.path;
   matcher->path.index = child->path.index - 1;
   matcher->path.sibling_index = gtk_widget_path_iter_get_sibling_index (matcher->path.path, matcher->path.index);
@@ -46,6 +49,7 @@ gtk_css_matcher_widget_path_get_previous (GtkCssMatcher       *matcher,
     return FALSE;
 
   matcher->path.klass = next->path.klass;
+  matcher->path.decl = NULL;
   matcher->path.path = next->path.path;
   matcher->path.index = next->path.index;
   matcher->path.sibling_index = next->path.sibling_index - 1;
@@ -58,6 +62,9 @@ gtk_css_matcher_widget_path_get_state (const GtkCssMatcher *matcher)
 {
   const GtkWidgetPath *siblings;
   
+  if (matcher->path.decl)
+    return gtk_css_node_declaration_get_state (matcher->path.decl);
+
   siblings = gtk_widget_path_iter_get_siblings (matcher->path.path, matcher->path.index);
   if (siblings && matcher->path.sibling_index != gtk_widget_path_iter_get_sibling_index (matcher->path.path, matcher->path.index))
     return gtk_widget_path_iter_get_state (siblings, matcher->path.sibling_index);
@@ -84,6 +91,10 @@ gtk_css_matcher_widget_path_has_class (const GtkCssMatcher *matcher,
 {
   const GtkWidgetPath *siblings;
   
+  if (matcher->path.decl &&
+      gtk_css_node_declaration_has_class (matcher->path.decl, class_name))
+    return TRUE;
+
   siblings = gtk_widget_path_iter_get_siblings (matcher->path.path, matcher->path.index);
   if (siblings && matcher->path.sibling_index != gtk_widget_path_iter_get_sibling_index (matcher->path.path, matcher->path.index))
     return gtk_widget_path_iter_has_qclass (siblings, matcher->path.sibling_index, class_name);
@@ -111,6 +122,16 @@ gtk_css_matcher_widget_path_has_regions (const GtkCssMatcher *matcher)
   GSList *regions;
   gboolean result;
 
+  if (matcher->path.decl)
+    {
+      GList *list = gtk_css_node_declaration_list_regions (matcher->path.decl);
+      if (list)
+        {
+          g_list_free (list);
+          return TRUE;
+        }
+    }
+
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   siblings = gtk_widget_path_iter_get_siblings (matcher->path.path, matcher->path.index);
   if (siblings && matcher->path.sibling_index != gtk_widget_path_iter_get_sibling_index (matcher->path.path, matcher->path.index))
@@ -132,6 +153,14 @@ gtk_css_matcher_widget_path_has_region (const GtkCssMatcher *matcher,
   const GtkWidgetPath *siblings;
   GtkRegionFlags region_flags;
   
+  if (matcher->path.decl)
+    {
+      GQuark q = g_quark_try_string (region);
+
+      if (q && gtk_css_node_declaration_has_region (matcher->path.decl, q, &region_flags))
+        goto found;
+    }
+
 G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   siblings = gtk_widget_path_iter_get_siblings (matcher->path.path, matcher->path.index);
   if (siblings && matcher->path.sibling_index != gtk_widget_path_iter_get_sibling_index (matcher->path.path, matcher->path.index))
@@ -144,12 +173,13 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
       if (!gtk_widget_path_iter_has_region (matcher->path.path, matcher->path.index, region, &region_flags))
         return FALSE;
     }
+G_GNUC_END_IGNORE_DEPRECATIONS
 
+found:
   if ((flags & region_flags) != flags)
     return FALSE;
 
   return TRUE;
-G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
 static gboolean
@@ -178,7 +208,7 @@ gtk_css_matcher_widget_path_has_position (const GtkCssMatcher *matcher,
   if (x % a)
     return FALSE;
 
-  return x / a > 0;
+  return x / a >= 0;
 }
 
 static const GtkCssMatcherClass GTK_CSS_MATCHER_WIDGET_PATH = {
@@ -195,18 +225,197 @@ static const GtkCssMatcherClass GTK_CSS_MATCHER_WIDGET_PATH = {
 };
 
 gboolean
-_gtk_css_matcher_init (GtkCssMatcher       *matcher,
-                       const GtkWidgetPath *path)
+_gtk_css_matcher_init (GtkCssMatcher               *matcher,
+                       const GtkWidgetPath         *path,
+                       const GtkCssNodeDeclaration *decl)
 {
   if (gtk_widget_path_length (path) == 0)
     return FALSE;
 
   matcher->path.klass = &GTK_CSS_MATCHER_WIDGET_PATH;
+  matcher->path.decl = decl;
   matcher->path.path = path;
   matcher->path.index = gtk_widget_path_length (path) - 1;
   matcher->path.sibling_index = gtk_widget_path_iter_get_sibling_index (path, matcher->path.index);
 
   return TRUE;
+}
+
+/* GTK_CSS_MATCHER_NODE */
+
+static gboolean
+gtk_css_matcher_node_get_parent (GtkCssMatcher       *matcher,
+                                 const GtkCssMatcher *child)
+{
+  GtkCssNode *node;
+  
+  node = gtk_css_node_get_parent (child->node.node);
+  if (node == NULL)
+    return FALSE;
+
+  return gtk_css_node_init_matcher (node, matcher);
+}
+
+static GtkCssNode *
+get_previous_visible_sibling (GtkCssNode *node)
+{
+  do {
+    node = gtk_css_node_get_previous_sibling (node);
+  } while (node && !gtk_css_node_get_visible (node));
+
+  return node;
+}
+
+static GtkCssNode *
+get_next_visible_sibling (GtkCssNode *node)
+{
+  do {
+    node = gtk_css_node_get_next_sibling (node);
+  } while (node && !gtk_css_node_get_visible (node));
+
+  return node;
+}
+
+static gboolean
+gtk_css_matcher_node_get_previous (GtkCssMatcher       *matcher,
+                                   const GtkCssMatcher *next)
+{
+  GtkCssNode *node;
+  
+  node = get_previous_visible_sibling (next->node.node);
+  if (node == NULL)
+    return FALSE;
+
+  return gtk_css_node_init_matcher (node, matcher);
+}
+
+static GtkStateFlags
+gtk_css_matcher_node_get_state (const GtkCssMatcher *matcher)
+{
+  return gtk_css_node_get_state (matcher->node.node);
+}
+
+static gboolean
+gtk_css_matcher_node_has_type (const GtkCssMatcher *matcher,
+                               GType                type)
+{
+  return g_type_is_a (gtk_css_node_get_widget_type (matcher->node.node), type);
+}
+
+static gboolean
+gtk_css_matcher_node_has_class (const GtkCssMatcher *matcher,
+                                GQuark               class_name)
+{
+  return gtk_css_node_has_class (matcher->node.node, class_name);
+}
+
+static gboolean
+gtk_css_matcher_node_has_id (const GtkCssMatcher *matcher,
+                             const char          *id)
+{
+  /* assume all callers pass an interned string */
+  return gtk_css_node_get_id (matcher->node.node) == id;
+}
+
+static gboolean
+gtk_css_matcher_node_has_regions (const GtkCssMatcher *matcher)
+{
+  GList *regions;
+  gboolean result;
+
+  regions = gtk_css_node_list_regions (matcher->node.node);
+  result = regions != NULL;
+  g_list_free (regions);
+
+  return result;
+}
+
+static gboolean
+gtk_css_matcher_node_has_region (const GtkCssMatcher *matcher,
+                                 const char          *region,
+                                 GtkRegionFlags       flags)
+{
+  GtkRegionFlags region_flags;
+  GQuark region_quark;
+  
+  region_quark = g_quark_try_string (region);
+  if (!region_quark)
+    return FALSE;
+
+  if (!gtk_css_node_has_region (matcher->node.node, region_quark, &region_flags))
+    return FALSE;
+
+  if ((flags & region_flags) != flags)
+    return FALSE;
+
+  return TRUE;
+}
+
+static gboolean
+gtk_css_matcher_node_nth_child (GtkCssNode *node,
+                                GtkCssNode *(* prev_node_func) (GtkCssNode *),
+                                int         a,
+                                int         b)
+{
+  int pos, x;
+
+  /* special-case the common "first-child" and "last-child" */
+  if (a == 0)
+    {
+      while (b > 0 && node != NULL)
+        {
+          b--;
+          node = prev_node_func (node);
+        }
+
+      return b == 0 && node == NULL;
+    }
+
+  /* count nodes */
+  for (pos = 0; node != NULL; pos++)
+    node = prev_node_func (node);
+
+  /* solve pos = a * X + b
+   * and return TRUE if X is integer >= 0 */
+  x = pos - b;
+
+  if (x % a)
+    return FALSE;
+
+  return x / a >= 0;
+}
+
+static gboolean
+gtk_css_matcher_node_has_position (const GtkCssMatcher *matcher,
+                                   gboolean             forward,
+                                   int                  a,
+                                   int                  b)
+{
+  return gtk_css_matcher_node_nth_child (matcher->node.node,
+                                         forward ? get_previous_visible_sibling 
+                                                 : get_next_visible_sibling,
+                                         a, b);
+}
+
+static const GtkCssMatcherClass GTK_CSS_MATCHER_NODE = {
+  gtk_css_matcher_node_get_parent,
+  gtk_css_matcher_node_get_previous,
+  gtk_css_matcher_node_get_state,
+  gtk_css_matcher_node_has_type,
+  gtk_css_matcher_node_has_class,
+  gtk_css_matcher_node_has_id,
+  gtk_css_matcher_node_has_regions,
+  gtk_css_matcher_node_has_region,
+  gtk_css_matcher_node_has_position,
+  FALSE
+};
+
+void
+_gtk_css_matcher_node_init (GtkCssMatcher *matcher,
+                            GtkCssNode    *node)
+{
+  matcher->node.klass = &GTK_CSS_MATCHER_NODE;
+  matcher->node.node = node;
 }
 
 /* GTK_CSS_MATCHER_WIDGET_ANY */

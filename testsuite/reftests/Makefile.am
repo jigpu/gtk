@@ -126,6 +126,9 @@ testdata = \
 	border-color-default.css \
 	border-color-default.ref.ui \
 	border-color-default.ui \
+	border-corner-zero-width-rendering.css \
+	border-corner-zero-width-rendering.ref.ui \
+	border-corner-zero-width-rendering.ui \
 	border-half-pixel.css \
 	border-half-pixel.ref.ui \
 	border-half-pixel.ui \
@@ -162,6 +165,9 @@ testdata = \
 	border-style.ui \
 	box-child-expand.ref.ui \
 	box-child-expand.ui \
+	box-order.css \
+	box-order.ref.ui \
+	box-order.ui \
 	box-packing.css \
 	box-packing.ref.ui \
 	box-packing.ui \
@@ -179,6 +185,9 @@ testdata = \
 	cellrenderer-pixbuf-stock-rtl.css \
 	cellrenderer-pixbuf-stock-rtl.ui \
 	cellrenderer-pixbuf-stock-rtl.ref.ui \
+	color-transition.css \
+	color-transition.ref.ui \
+	color-transition.ui \
 	css-currentcolor-alpha.css \
 	css-currentcolor-alpha.ui \
 	css-currentcolor-alpha.ref.ui \
@@ -314,6 +323,9 @@ testdata = \
 	label-width-chars-dont-shrink.ui \
 	label-wrap-justify.ref.ui \
 	label-wrap-justify.ui \
+	letter-spacing.css \
+	letter-spacing.ui \
+	letter-spacing.ref.ui \
 	linear-gradient.css \
 	linear-gradient.ref.ui \
 	linear-gradient.ui \
@@ -397,6 +409,9 @@ testdata = \
 	sizegroups-get-preferred-null.ref.ui \
 	statusbar-remove-all.ref.ui \
 	statusbar-remove-all.ui \
+	style-context-save-inheritance.css \
+	style-context-save-inheritance.ref.ui \
+	style-context-save-inheritance.ui \
 	style-properties-nth-child.css \
 	style-properties-nth-child.ref.ui \
 	style-properties-nth-child.ui \
@@ -412,8 +427,12 @@ testdata = \
 	textview-margins.css \
 	textview-margins.ref.ui \
 	textview-margins.ui \
+	textview-tags.ref.ui \
+	textview-tags.ui \
 	toplevel-vs-popup.ref.ui \
 	toplevel-vs-popup.ui \
+	treeview-crash-too-wide.ref.ui \
+	treeview-crash-too-wide.ui \
 	treeview-fixed-height.css \
 	treeview-fixed-height.ref.ui \
 	treeview-fixed-height.ui \
@@ -482,9 +501,11 @@ libreftest_la_LIBADD = $(gtk_reftest_LDADD)
 libreftest_la_SOURCES =			\
 	expand-expander.c		\
 	label-text-shadow-changes-modify-clip.c	\
+	letter-spacing.c		\
 	set-default-direction.c		\
 	statusbar-remove-all.c		\
 	textview-border-windows.c	\
+	textview-tags.c			\
 	$(NULL)
 
 -include $(top_srcdir)/git.mk

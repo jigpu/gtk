@@ -270,11 +270,11 @@ static GdkBackend gdk_backends[] = {
 #ifdef GDK_WINDOWING_WIN32
   { "win32",    _gdk_win32_display_open },
 #endif
-#ifdef GDK_WINDOWING_X11
-  { "x11",      _gdk_x11_display_open },
-#endif
 #ifdef GDK_WINDOWING_WAYLAND
   { "wayland",  _gdk_wayland_display_open },
+#endif
+#ifdef GDK_WINDOWING_X11
+  { "x11",      _gdk_x11_display_open },
 #endif
 #ifdef GDK_WINDOWING_MIR
   { "mir",  _gdk_mir_display_open },
@@ -363,12 +363,12 @@ gdk_display_get_default (void)
 GdkScreen *
 gdk_screen_get_default (void)
 {
-  GdkDisplay *default_display;
+  GdkDisplay *display;
 
-  default_display = gdk_display_get_default ();
+  display = gdk_display_get_default ();
 
-  if (default_display)
-    return gdk_display_get_default_screen (default_display);
+  if (display)
+    return GDK_DISPLAY_GET_CLASS (display)->get_default_screen (display);
   else
     return NULL;
 }

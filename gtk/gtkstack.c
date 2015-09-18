@@ -91,6 +91,7 @@ enum  {
   PROP_TRANSITION_DURATION,
   PROP_TRANSITION_TYPE,
   PROP_TRANSITION_RUNNING,
+  PROP_INTERPOLATE_SIZE,
   LAST_PROP
 };
 
@@ -101,7 +102,8 @@ enum
   CHILD_PROP_TITLE,
   CHILD_PROP_ICON_NAME,
   CHILD_PROP_POSITION,
-  CHILD_PROP_NEEDS_ATTENTION
+  CHILD_PROP_NEEDS_ATTENTION,
+  LAST_CHILD_PROP
 };
 
 typedef struct _GtkStackChildInfo GtkStackChildInfo;
@@ -137,10 +139,17 @@ typedef struct {
   gint64 start_time;
   gint64 end_time;
 
+  gint last_visible_widget_width;
+  gint last_visible_widget_height;
+
+  gboolean interpolate_size;
+
   GtkStackTransitionType active_transition_type;
+
 } GtkStackPrivate;
 
 static GParamSpec *stack_props[LAST_PROP] = { NULL, };
+static GParamSpec *stack_child_props[LAST_CHILD_PROP] = { NULL, };
 
 static void     gtk_stack_add                            (GtkContainer  *widget,
                                                           GtkWidget     *child);
@@ -201,8 +210,17 @@ G_DEFINE_TYPE_WITH_PRIVATE (GtkStack, gtk_stack, GTK_TYPE_CONTAINER)
 static void
 gtk_stack_init (GtkStack *stack)
 {
-  gtk_widget_set_has_window ((GtkWidget*) stack, TRUE);
-  gtk_widget_set_redraw_on_allocate ((GtkWidget*) stack, TRUE);
+}
+
+static void
+gtk_stack_dispose (GObject *obj)
+{
+  GtkStack *stack = GTK_STACK (obj);
+  GtkStackPrivate *priv = gtk_stack_get_instance_private (stack);
+
+  priv->visible_child = NULL;
+
+  G_OBJECT_CLASS (gtk_stack_parent_class)->dispose (obj);
 }
 
 static void
@@ -253,6 +271,9 @@ gtk_stack_get_property (GObject   *object,
     case PROP_TRANSITION_RUNNING:
       g_value_set_boolean (value, gtk_stack_get_transition_running (stack));
       break;
+    case PROP_INTERPOLATE_SIZE:
+      g_value_set_boolean (value, gtk_stack_get_interpolate_size (stack));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -290,6 +311,9 @@ gtk_stack_set_property (GObject     *object,
     case PROP_TRANSITION_TYPE:
       gtk_stack_set_transition_type (stack, g_value_get_enum (value));
       break;
+    case PROP_INTERPOLATE_SIZE:
+      gtk_stack_set_interpolate_size (stack, g_value_get_boolean (value));
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
       break;
@@ -319,7 +343,7 @@ gtk_stack_realize (GtkWidget *widget)
   attributes.wclass = GDK_INPUT_OUTPUT;
   attributes.visual = gtk_widget_get_visual (widget);
   attributes.event_mask =
-    gtk_widget_get_events (widget) | GDK_EXPOSURE_MASK;
+    gtk_widget_get_events (widget);
   attributes_mask = (GDK_WA_X | GDK_WA_Y) | GDK_WA_VISUAL;
 
   priv->view_window =
@@ -375,6 +399,7 @@ gtk_stack_class_init (GtkStackClass *klass)
 
   object_class->get_property = gtk_stack_get_property;
   object_class->set_property = gtk_stack_set_property;
+  object_class->dispose = gtk_stack_dispose;
   object_class->finalize = gtk_stack_finalize;
 
   widget_class->size_allocate = gtk_stack_size_allocate;
@@ -392,7 +417,6 @@ gtk_stack_class_init (GtkStackClass *klass)
   container_class->forall = gtk_stack_forall;
   container_class->set_child_property = gtk_stack_set_child_property;
   container_class->get_child_property = gtk_stack_get_child_property;
-  /*container_class->get_path_for_child = gtk_stack_get_path_for_child; */
   gtk_container_class_handle_border_width (container_class);
 
   stack_props[PROP_HOMOGENEOUS] =
@@ -443,36 +467,42 @@ gtk_stack_class_init (GtkStackClass *klass)
       g_param_spec_boolean ("transition-running", P_("Transition running"), P_("Whether or not the transition is currently running"),
                             FALSE,
                             GTK_PARAM_READABLE);
+  stack_props[PROP_INTERPOLATE_SIZE] =
+      g_param_spec_boolean ("interpolate-size", P_("Interpolate size"), P_("Whether or not the size should smoothly change when changing between differently sized children"),
+                            FALSE,
+                            GTK_PARAM_READABLE);
+
 
   g_object_class_install_properties (object_class, LAST_PROP, stack_props);
 
-  gtk_container_class_install_child_property (container_class, CHILD_PROP_NAME,
+  stack_child_props[CHILD_PROP_NAME] =
     g_param_spec_string ("name",
                          P_("Name"),
                          P_("The name of the child page"),
                          NULL,
-                         GTK_PARAM_READWRITE));
+                         GTK_PARAM_READWRITE);
 
-  gtk_container_class_install_child_property (container_class, CHILD_PROP_TITLE,
+  stack_child_props[CHILD_PROP_TITLE] =
     g_param_spec_string ("title",
                          P_("Title"),
                          P_("The title of the child page"),
                          NULL,
-                         GTK_PARAM_READWRITE));
+                         GTK_PARAM_READWRITE);
 
-  gtk_container_class_install_child_property (container_class, CHILD_PROP_ICON_NAME,
+  stack_child_props[CHILD_PROP_ICON_NAME] =
     g_param_spec_string ("icon-name",
                          P_("Icon name"),
                          P_("The icon name of the child page"),
                          NULL,
-                         GTK_PARAM_READWRITE));
+                         GTK_PARAM_READWRITE);
 
-  gtk_container_class_install_child_property (container_class, CHILD_PROP_POSITION,
+  stack_child_props[CHILD_PROP_POSITION] =
     g_param_spec_int ("position",
                       P_("Position"),
                       P_("The index of the child in the parent"),
-                      -1, G_MAXINT, 0,
-                      GTK_PARAM_READWRITE));
+                      -1, G_MAXINT,
+                      0,
+                      GTK_PARAM_READWRITE);
 
   /**
    * GtkStack:needs-attention:
@@ -484,12 +514,14 @@ gtk_stack_class_init (GtkStackClass *klass)
    *
    * Since: 3.12
    */
-  gtk_container_class_install_child_property (container_class, CHILD_PROP_NEEDS_ATTENTION,
+  stack_child_props[CHILD_PROP_NEEDS_ATTENTION] =
     g_param_spec_boolean ("needs-attention",
                          P_("Needs Attention"),
                          P_("Whether this page needs attention"),
                          FALSE,
-                         GTK_PARAM_READWRITE));
+                         GTK_PARAM_READWRITE);
+
+  gtk_container_class_install_child_properties (container_class, LAST_CHILD_PROP, stack_child_props);
 }
 
 /**
@@ -574,7 +606,7 @@ reorder_child (GtkStack  *stack,
   priv->children = g_list_delete_link (priv->children, old_link);
   priv->children = g_list_insert_before (priv->children, new_link, child_info);
 
-  gtk_widget_child_notify (child, "position");
+  gtk_container_child_notify_by_pspec (GTK_CONTAINER (stack), child, stack_child_props[CHILD_PROP_POSITION]);
 }
 
 static void
@@ -663,7 +695,7 @@ gtk_stack_set_child_property (GtkContainer *container,
       g_free (info->name);
       info->name = name;
 
-      gtk_container_child_notify (container, child, "name");
+      gtk_container_child_notify_by_pspec (container, child, pspec);
 
       if (priv->visible_child == info)
         g_object_notify_by_pspec (G_OBJECT (stack),
@@ -674,13 +706,13 @@ gtk_stack_set_child_property (GtkContainer *container,
     case CHILD_PROP_TITLE:
       g_free (info->title);
       info->title = g_value_dup_string (value);
-      gtk_container_child_notify (container, child, "title");
+      gtk_container_child_notify_by_pspec (container, child, pspec);
       break;
 
     case CHILD_PROP_ICON_NAME:
       g_free (info->icon_name);
       info->icon_name = g_value_dup_string (value);
-      gtk_container_child_notify (container, child, "icon-name");
+      gtk_container_child_notify_by_pspec (container, child, pspec);
       break;
 
     case CHILD_PROP_POSITION:
@@ -689,7 +721,7 @@ gtk_stack_set_child_property (GtkContainer *container,
 
     case CHILD_PROP_NEEDS_ATTENTION:
       info->needs_attention = g_value_get_boolean (value);
-      gtk_container_child_notify (container, child, "needs-attention");
+      gtk_container_child_notify_by_pspec (container, child, pspec);
       break;
 
     default:
@@ -835,6 +867,9 @@ gtk_stack_set_transition_position (GtkStack *stack,
   priv->transition_pos = pos;
   gtk_widget_queue_draw (GTK_WIDGET (stack));
 
+  if (!priv->vhomogeneous || !priv->hhomogeneous)
+    gtk_widget_queue_resize (GTK_WIDGET (stack));
+
   if (priv->bin_window != NULL &&
       is_window_moving_transition (priv->active_transition_type))
     {
@@ -846,21 +881,18 @@ gtk_stack_set_transition_position (GtkStack *stack,
 
   done = pos >= 1.0;
 
-  if (done || priv->last_visible_surface != NULL)
-    {
-      if (priv->last_visible_child)
-        {
-          gtk_widget_set_child_visible (priv->last_visible_child->widget, FALSE);
-          priv->last_visible_child = NULL;
-        }
-    }
-
   if (done)
     {
       if (priv->last_visible_surface != NULL)
         {
           cairo_surface_destroy (priv->last_visible_surface);
           priv->last_visible_surface = NULL;
+        }
+
+      if (priv->last_visible_child != NULL)
+        {
+          gtk_widget_set_child_visible (priv->last_visible_child->widget, FALSE);
+          priv->last_visible_child = NULL;
         }
 
       gtk_widget_queue_resize (GTK_WIDGET (stack));
@@ -886,12 +918,11 @@ gtk_stack_transition_cb (GtkWidget     *widget,
     t = (now - priv->start_time) / (double) (priv->end_time - priv->start_time);
 
   /* Finish animation early if not mapped anymore */
-  if (!gtk_widget_get_mapped (GTK_WIDGET (stack)))
+  if (!gtk_widget_get_mapped (widget))
     t = 1.0;
 
   if (gtk_stack_set_transition_position (stack, t))
     {
-      gtk_widget_set_opacity (GTK_WIDGET (stack), 1.0);
       priv->tick_id = 0;
       g_object_notify_by_pspec (G_OBJECT (stack), stack_props[PROP_TRANSITION_RUNNING]);
 
@@ -1001,6 +1032,12 @@ set_visible_child (GtkStack               *stack,
   GtkWidget *focus;
   gboolean contains_focus = FALSE;
 
+  /* if we are being destroyed, do not bother with transitions
+   * and notifications
+   */
+  if (gtk_widget_in_destruction (widget))
+    return;
+
   /* If none, pick first visible */
   if (child_info == NULL)
     {
@@ -1024,6 +1061,7 @@ set_visible_child (GtkStack               *stack,
       focus = gtk_window_get_focus (GTK_WINDOW (toplevel));
       if (focus &&
           priv->visible_child &&
+          priv->visible_child->widget &&
           gtk_widget_is_ancestor (focus, priv->visible_child->widget))
         {
           contains_focus = TRUE;
@@ -1048,9 +1086,20 @@ set_visible_child (GtkStack               *stack,
   if (priv->visible_child && priv->visible_child->widget)
     {
       if (gtk_widget_is_visible (widget))
-        priv->last_visible_child = priv->visible_child;
+        {
+          int fake;
+          priv->last_visible_child = priv->visible_child;
+          gtk_widget_get_preferred_width (priv->last_visible_child->widget,
+                                          &fake,
+                                          &priv->last_visible_widget_width);
+          gtk_widget_get_preferred_height (priv->last_visible_child->widget,
+                                          &fake,
+                                          &priv->last_visible_widget_height);
+        }
       else
-        gtk_widget_set_child_visible (priv->visible_child->widget, FALSE);
+        {
+          gtk_widget_set_child_visible (priv->visible_child->widget, FALSE);
+        }
     }
 
   priv->visible_child = child_info;
@@ -1089,9 +1138,6 @@ set_visible_child (GtkStack               *stack,
 
       transition_type = get_simple_transition_type (i_first, transition_type);
     }
-
-  gtk_widget_queue_resize (GTK_WIDGET (stack));
-  gtk_widget_queue_draw (GTK_WIDGET (stack));
 
   g_object_notify_by_pspec (G_OBJECT (stack), stack_props[PROP_VISIBLE_CHILD]);
   g_object_notify_by_pspec (G_OBJECT (stack),
@@ -1183,7 +1229,7 @@ gtk_stack_add_named (GtkStack   *stack,
 
 static void
 gtk_stack_add (GtkContainer *container,
-              GtkWidget     *child)
+               GtkWidget    *child)
 {
   GtkStack *stack = GTK_STACK (container);
   GtkStackPrivate *priv = gtk_stack_get_instance_private (stack);
@@ -1212,7 +1258,7 @@ gtk_stack_add (GtkContainer *container,
   g_signal_connect (child, "notify::visible",
                     G_CALLBACK (stack_child_visibility_notify_cb), stack);
 
-  gtk_widget_child_notify (child, "position");
+  gtk_container_child_notify_by_pspec (container, child, stack_child_props[CHILD_PROP_POSITION]);
 
   if (priv->visible_child == NULL &&
       gtk_widget_get_visible (child))
@@ -1398,7 +1444,7 @@ gtk_stack_set_hhomogeneous (GtkStack *stack,
 
   if (priv->hhomogeneous == hhomogeneous)
     return;
-  
+
   priv->hhomogeneous = hhomogeneous;
 
   if (gtk_widget_get_visible (GTK_WIDGET(stack)))
@@ -1452,7 +1498,7 @@ gtk_stack_set_vhomogeneous (GtkStack *stack,
 
   if (priv->vhomogeneous == vhomogeneous)
     return;
-  
+
   priv->vhomogeneous = vhomogeneous;
 
   if (gtk_widget_get_visible (GTK_WIDGET(stack)))
@@ -1601,6 +1647,56 @@ gtk_stack_get_transition_running (GtkStack *stack)
 
   return (priv->tick_id != 0);
 }
+
+/**
+ * gtk_stack_set_interpolate_size:
+ * @stack: A #GtkStack
+ * @interpolate_size: the new value
+ *
+ * Sets whether or not @stack will interpolate its size when
+ * changing the visible child. If the interpolate-size property
+ * is set to %TRUE, @stack will interpolate its size between
+ * the current one and the one it'll take after changing the visible-child,
+ * according to the set transition-duration.
+ *
+ * Since: 3.18
+ */
+void
+gtk_stack_set_interpolate_size (GtkStack *stack,
+                                gboolean  interpolate_size)
+{
+  GtkStackPrivate *priv = gtk_stack_get_instance_private (stack);
+  g_return_if_fail (GTK_IS_STACK (stack));
+
+  interpolate_size = !!interpolate_size;
+
+  if (priv->interpolate_size == interpolate_size)
+    return;
+
+  priv->interpolate_size = interpolate_size;
+  g_object_notify_by_pspec (G_OBJECT (stack),
+                            stack_props[PROP_INTERPOLATE_SIZE]);
+}
+
+/**
+ * gtk_stack_get_interpolate_size:
+ * @stack: A #GtkStack
+ *
+ * Returns: %TRUE If the #GtkStack is set up to interpolate between
+ * visible-child sizes, %FALSE otherwise.
+ *
+ * Since: 3.18
+ */
+gboolean
+gtk_stack_get_interpolate_size (GtkStack *stack)
+{
+  GtkStackPrivate *priv = gtk_stack_get_instance_private (stack);
+  g_return_val_if_fail (GTK_IS_STACK (stack), FALSE);
+
+  return priv->interpolate_size;
+}
+
+
 
 /**
  * gtk_stack_get_visible_child:
@@ -1962,6 +2058,13 @@ gtk_stack_draw_slide (GtkWidget *widget,
       x += priv->last_visible_surface_allocation.x;
       y += priv->last_visible_surface_allocation.y;
 
+
+      if (gtk_widget_get_valign (priv->last_visible_child->widget) == GTK_ALIGN_END &&
+          priv->last_visible_widget_height > allocation.height)
+        y -= priv->last_visible_widget_height - allocation.height;
+      else if (gtk_widget_get_valign (priv->last_visible_child->widget) == GTK_ALIGN_CENTER)
+        y -= (priv->last_visible_widget_height - allocation.height) / 2;
+
       cairo_save (cr);
       cairo_set_source_surface (cr, priv->last_visible_surface, x, y);
       cairo_paint (cr);
@@ -1970,8 +2073,8 @@ gtk_stack_draw_slide (GtkWidget *widget,
 
   if (gtk_cairo_should_draw_window (cr, priv->bin_window))
     gtk_container_propagate_draw (GTK_CONTAINER (stack),
-				  priv->visible_child->widget,
-				  cr);
+                                  priv->visible_child->widget,
+                                  cr);
 }
 
 static gboolean
@@ -1985,7 +2088,7 @@ gtk_stack_draw (GtkWidget *widget,
   if (gtk_cairo_should_draw_window (cr, priv->view_window))
     {
       GtkStyleContext *context;
-          
+
       context = gtk_widget_get_style_context (widget);
       gtk_render_background (context,
                              cr,
@@ -2065,15 +2168,41 @@ gtk_stack_size_allocate (GtkWidget     *widget,
 
   gtk_widget_set_allocation (widget, allocation);
 
-  child_allocation = *allocation;
   child_allocation.x = 0;
   child_allocation.y = 0;
+  child_allocation.width = allocation->width;
+  child_allocation.height = allocation->height;
+
 
   if (priv->last_visible_child)
     gtk_widget_size_allocate (priv->last_visible_child->widget, &child_allocation);
 
   if (priv->visible_child)
-    gtk_widget_size_allocate (priv->visible_child->widget, &child_allocation);
+    {
+      int min, nat;
+      GtkAlign valign;
+
+      gtk_widget_get_preferred_height_for_width (priv->visible_child->widget,
+                                                 allocation->width,
+                                                 &min, &nat);
+      if (priv->interpolate_size)
+        {
+          valign = gtk_widget_get_valign (priv->visible_child->widget);
+          child_allocation.height = MAX (nat, allocation->height);
+          if (valign == GTK_ALIGN_END &&
+              child_allocation.height > allocation->height)
+            child_allocation.y -= nat - allocation->height;
+          else if (valign == GTK_ALIGN_CENTER &&
+                   child_allocation.height > allocation->height)
+            child_allocation.y -= (nat - allocation->height) / 2;
+
+          gtk_widget_size_allocate (priv->visible_child->widget, &child_allocation);
+        }
+      else
+        {
+          gtk_widget_size_allocate (priv->visible_child->widget, &child_allocation);
+        }
+    }
 
    if (gtk_widget_get_realized (widget))
     {
@@ -2085,6 +2214,9 @@ gtk_stack_size_allocate (GtkWidget     *widget,
                               allocation->width, allocation->height);
     }
 }
+
+
+#define LERP(a, b, t) ((a) + (((b) - (a)) * (1.0 - (t))))
 
 static void
 gtk_stack_get_preferred_height (GtkWidget *widget,
@@ -2107,9 +2239,9 @@ gtk_stack_get_preferred_height (GtkWidget *widget,
       child = child_info->widget;
 
       if (!priv->vhomogeneous &&
-          (priv->visible_child != child_info &&
-           priv->last_visible_child != child_info))
+           priv->visible_child != child_info)
         continue;
+
       if (gtk_widget_get_visible (child))
         {
           gtk_widget_get_preferred_height (child, &child_min, &child_nat);
@@ -2119,10 +2251,11 @@ gtk_stack_get_preferred_height (GtkWidget *widget,
         }
     }
 
-  if (priv->last_visible_surface != NULL)
+  if (priv->last_visible_child != NULL && !priv->vhomogeneous)
     {
-      *minimum_height = MAX (*minimum_height, priv->last_visible_surface_allocation.height);
-      *natural_height = MAX (*natural_height, priv->last_visible_surface_allocation.height);
+      gdouble t = priv->interpolate_size ? ease_out_cubic (priv->transition_pos) : 1.0;
+      *minimum_height = LERP (*minimum_height, priv->last_visible_widget_height, t);
+      *natural_height = LERP (*natural_height, priv->last_visible_widget_height, t);
     }
 }
 
@@ -2148,9 +2281,9 @@ gtk_stack_get_preferred_height_for_width (GtkWidget *widget,
       child = child_info->widget;
 
       if (!priv->vhomogeneous &&
-          (priv->visible_child != child_info &&
-           priv->last_visible_child != child_info))
+           priv->visible_child != child_info)
         continue;
+
       if (gtk_widget_get_visible (child))
         {
           gtk_widget_get_preferred_height_for_width (child, width, &child_min, &child_nat);
@@ -2160,10 +2293,11 @@ gtk_stack_get_preferred_height_for_width (GtkWidget *widget,
         }
     }
 
-  if (priv->last_visible_surface != NULL)
+  if (priv->last_visible_child != NULL && !priv->vhomogeneous)
     {
-      *minimum_height = MAX (*minimum_height, priv->last_visible_surface_allocation.height);
-      *natural_height = MAX (*natural_height, priv->last_visible_surface_allocation.height);
+      gdouble t = priv->interpolate_size ? ease_out_cubic (priv->transition_pos) : 1.0;
+      *minimum_height = LERP (*minimum_height, priv->last_visible_widget_height, t);
+      *natural_height = LERP (*natural_height, priv->last_visible_widget_height, t);
     }
 }
 
@@ -2188,8 +2322,7 @@ gtk_stack_get_preferred_width (GtkWidget *widget,
       child = child_info->widget;
 
       if (!priv->hhomogeneous &&
-          (priv->visible_child != child_info &&
-           priv->last_visible_child != child_info))
+           priv->visible_child != child_info)
         continue;
       if (gtk_widget_get_visible (child))
         {
@@ -2200,10 +2333,11 @@ gtk_stack_get_preferred_width (GtkWidget *widget,
         }
     }
 
-  if (priv->last_visible_surface != NULL)
+  if (priv->last_visible_child != NULL && !priv->hhomogeneous)
     {
-      *minimum_width = MAX (*minimum_width, priv->last_visible_surface_allocation.width);
-      *natural_width = MAX (*natural_width, priv->last_visible_surface_allocation.width);
+      gdouble t = priv->interpolate_size ? ease_out_cubic (priv->transition_pos) : 1.0;
+      *minimum_width = LERP (*minimum_width, priv->last_visible_widget_width, t);
+      *natural_width = LERP (*natural_width, priv->last_visible_widget_width, t);
     }
 }
 
@@ -2229,8 +2363,7 @@ gtk_stack_get_preferred_width_for_height (GtkWidget *widget,
       child = child_info->widget;
 
       if (!priv->hhomogeneous &&
-          (priv->visible_child != child_info &&
-           priv->last_visible_child != child_info))
+           priv->visible_child != child_info)
         continue;
       if (gtk_widget_get_visible (child))
         {
@@ -2241,9 +2374,10 @@ gtk_stack_get_preferred_width_for_height (GtkWidget *widget,
         }
     }
 
-  if (priv->last_visible_surface != NULL)
+  if (priv->last_visible_child != NULL && !priv->hhomogeneous)
     {
-      *minimum_width = MAX (*minimum_width, priv->last_visible_surface_allocation.width);
-      *natural_width = MAX (*natural_width, priv->last_visible_surface_allocation.width);
+      gdouble t = priv->interpolate_size ? ease_out_cubic (priv->transition_pos) : 1.0;
+      *minimum_width = LERP (*minimum_width, priv->last_visible_widget_width, t);
+      *natural_width = LERP (*natural_width, priv->last_visible_widget_width, t);
     }
 }

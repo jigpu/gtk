@@ -218,7 +218,6 @@ add_columns (GtkTreeView *treeview)
 
   /* column for symbolic icon */
   renderer = gtk_cell_renderer_pixbuf_new ();
-  g_object_set (G_OBJECT (renderer), "follow-state", TRUE, NULL);
   column = gtk_tree_view_column_new_with_attributes ("Symbolic icon",
                                                      renderer,
                                                      "icon-name",
@@ -259,7 +258,7 @@ do_list_store (GtkWidget *do_widget)
       window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
       gtk_window_set_screen (GTK_WINDOW (window),
                              gtk_widget_get_screen (do_widget));
-      gtk_window_set_title (GTK_WINDOW (window), "GtkListStore demo");
+      gtk_window_set_title (GTK_WINDOW (window), "List Store");
 
       g_signal_connect (window, "destroy",
                         G_CALLBACK (gtk_widget_destroyed), &window);

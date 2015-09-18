@@ -39,6 +39,7 @@ struct _GdkX11Display
   GdkDisplay parent_instance;
   Display *xdisplay;
   GdkScreen *screen;
+  GList *screens;
 
   GSource *event_source;
 
@@ -66,6 +67,7 @@ struct _GdkX11Display
 
   gboolean have_randr12;
   gboolean have_randr13;
+  gboolean have_randr15;
   gint xrandr_event_base;
 
   /* If the SECURITY extension is in place, whether this client holds
@@ -129,6 +131,12 @@ struct _GdkX11Display
   gint glx_version;
   gint glx_error_base;
   gint glx_event_base;
+
+  /* Translation between X server time and system-local monotonic time */
+  gint64 server_time_query_time;
+  gint64 server_time_offset;
+
+  guint server_time_is_monotonic_time : 1;
 
   guint have_glx : 1;
 

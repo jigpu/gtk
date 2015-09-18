@@ -7,7 +7,6 @@
 
 #include <gtk/gtk.h>
 
-static GtkWidget *window = NULL;
 static GtkGesture *rotate = NULL;
 static GtkGesture *zoom = NULL;
 static gdouble swipe_x = 0;
@@ -87,9 +86,10 @@ drawing_area_draw (GtkWidget *widget,
       cairo_matrix_t matrix;
       gdouble angle, scale;
 
-      cairo_matrix_init_translate (&matrix,
-                                   allocation.width / 2,
-                                   allocation.height / 2);
+      cairo_get_matrix (cr, &matrix);
+      cairo_matrix_translate (&matrix,
+                              allocation.width / 2,
+                              allocation.height / 2);
 
       cairo_save (cr);
 
@@ -132,6 +132,7 @@ drawing_area_draw (GtkWidget *widget,
 GtkWidget *
 do_gestures (GtkWidget *do_widget)
 {
+  static GtkWidget *window = NULL;
   GtkWidget *drawing_area;
   GtkGesture *gesture;
 
@@ -139,7 +140,7 @@ do_gestures (GtkWidget *do_widget)
     {
       window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
       gtk_window_set_default_size (GTK_WINDOW (window), 400, 400);
-      gtk_window_set_title (GTK_WINDOW (window), "Gestures demo");
+      gtk_window_set_title (GTK_WINDOW (window), "Gestures");
       g_signal_connect (window, "destroy",
                         G_CALLBACK (gtk_widget_destroyed), &window);
 
@@ -190,10 +191,7 @@ do_gestures (GtkWidget *do_widget)
   if (!gtk_widget_get_visible (window))
     gtk_widget_show_all (window);
   else
-    {
-      gtk_widget_destroy (window);
-      window = NULL;
-    }
+    gtk_widget_destroy (window);
 
   return window;
 }

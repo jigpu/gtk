@@ -19,19 +19,22 @@
 
 // entries
 
-@function entry_focus_border($fc) {
+@function entry_focus_border($fc:$selected_bg_color) {
   @if $variant == 'light' { @return $fc; }
   @else { @return if($fc==$selected_bg_color, $selected_borders_color, darken($fc,35%)); }
 }
 
-@function entry_focus_glow($fc) {
-  $_focus_glow_color: if($variant=='light', transparentize($fc,0.85),
-                                            transparentize($fc,0.3));
-  @return inset 0 0 0 1px $_focus_glow_color;
+@function entry_focus_shadow($fc:$selected_bg_color) {
+  @return inset 0 0 0 1px $fc;
 }
 
 @function entry_gradient($c) {
-  @return linear-gradient(to bottom, darken($c,3%), $c 90%);
+  @if $variant=='light' { @return linear-gradient(to bottom, mix($borders_color, $c, 35%),
+                                                             mix($borders_color, $c, 7%) 3px,
+                                                             $c 90%); }
+  @else { @return linear-gradient(to bottom, mix($borders_color, $c, 95%),
+                                             mix($borders_color, $c, 40%) 3px,
+                                             $c 90%); }
 }
 
 @mixin entry($t, $fc:$selected_bg_color, $edge: $borders_edge) {
@@ -46,51 +49,40 @@
 // possible $t values:
 // normal, focus, insensitive, backdrop, backdrop-insensitive, osd, osd-focus, osd-backdrop;
 //
+
   background-color: transparent;
   background-image: entry_gradient($base_color);
   $_blank_edge: if($edge == none, none, 0 1px transparentize($edge,1));
   $_entry_edge: if($edge == none, none, _widget_edge($edge));
-  $_inner_shadows: inset 0 3px transparentize(black, 0.98),
-                   inset 0 2px transparentize(black, 0.97),
-                   inset 0 1px transparentize(black, 0.92);
 
-  // we need to match the same shadow types (inset/outset) in various states
-  // hence transparent shadows istead of resetting them when not needed
-  $_blank_inner_shadows: inset 0 3px transparentize(black, 1),
-                         inset 0 2px transparentize(black, 1),
-                         inset 0 1px transparentize(black, 1);
   @if $t==normal {
     color: $text_color;
     border-color: $borders_color;
-    @include _shadows($_inner_shadows,
-                      entry_focus_glow(transparentize($fc,1)),
-                      $_entry_edge);
-    // the second transparent shadow is needed for the transition to work
+    @include _shadows(entry_focus_shadow(transparentize($fc,1)), $_entry_edge);
+    // for the transition to work the number of shadows in different states needs to match, hence the transparent shadow here.
   }
   @if $t==focus {
-    @include _shadows($_inner_shadows,
-                      entry_focus_glow($fc),
-                      $_entry_edge);
+    @include _shadows(entry_focus_shadow($fc), $_entry_edge);
     border-color: entry_focus_border($fc);
   }
   @if $t==insensitive {
     color: $insensitive_fg_color;
     border-color: $borders_color;
     background-image: linear-gradient(to bottom, $insensitive_bg_color);
-    @include _shadows($_blank_inner_shadows, $_entry_edge);
+    box-shadow: $_entry_edge;
 
   }
   @if $t==backdrop {
     color: $backdrop_text_color;
     border-color: $backdrop_borders_color;
     background-image: linear-gradient(to bottom, $backdrop_base_color);
-    @include _shadows($_blank_inner_shadows, $_blank_edge);
+    box-shadow: $_blank_edge;
   }
   @if $t==backdrop-insensitive {
     color: $backdrop_insensitive_color;
     border-color: $backdrop_borders_color;
     background-image: linear-gradient(to bottom, $insensitive_bg_color);
-    @include _shadows($_blank_inner_shadows, $_blank_edge);
+    box-shadow: $_blank_edge;
   }
   @if $t==osd {
     color: $osd_text_color;
@@ -106,7 +98,7 @@
     border-color: $selected_bg_color;
     background-image: linear-gradient(to bottom, transparentize(opacify($osd_borders_color, 1), 0.5));
     background-clip: padding-box;
-    box-shadow: entry_focus_glow($selected_bg_color);
+    box-shadow: entry_focus_shadow($fc);
     text-shadow: 0 1px black;
     icon-shadow: 0 1px black;
   }
@@ -243,6 +235,7 @@
     border-color: if($c!=$bg_color, _border_color($c), $borders_color);
     background-image: linear-gradient(to bottom,
                                       darken($c,9%),
+                                      darken($c,6.6%) 40%,
                                       darken($c,5%));
     @include _button_text_shadow($tc,darken($c,10%));
     @include _shadows(inset 0 1px transparentize(black, 0.93),
@@ -588,32 +581,30 @@
 // top, bottom, right, left
 //
 
-  $_shadow_color: if($variant == 'light', transparentize(black, 0.7), transparentize(black, 0.5));
+  $_undershoot_color_dark: transparentize(black, 0.8);
+  $_undershoot_color_light: transparentize(white, 0.8);
+
+  $_gradient_dir: left;
+  $_dash_bg_size: 10px 1px;
+  $_gradient_repeat: repeat-x;
+  $_bg_pos: center $p;
 
   background-color: transparent; // shouldn't be needed, but better to be sure;
 
-  @if $p==top {
-    background-image: linear-gradient(to bottom, $_shadow_color,
-                                                 transparentize($_shadow_color, 0.5) 3px,
-                                                 transparent);
+  @if ($p == left) or ($p == right) {
+    $_gradient_dir: top;
+    $_dash_bg_size: 1px 10px;
+    $_gradient_repeat: repeat-y;
+    $_bg_pos: $p center;
   }
 
-  @else if $p==bottom {
+  background-image: linear-gradient(to $_gradient_dir, // this is the dashed line
+                                    $_undershoot_color_light 50%,
+                                    $_undershoot_color_dark 50%);
 
-    background-image: linear-gradient(to top, transparentize(black, 0.5),
-                                              transparentize(black, 0.8) 3%,
-                                              transparent,
-                                              transparentize(black, 0.98) 25%,
-                                              transparent);
-  }
-
-  @else {
-    $_dir: left;
-
-    @if $p==left { $_dir: right; }
-
-    background-image: linear-gradient(to $_dir, $_shadow_color,
-                                                transparentize($_shadow_color, 0.7) 2px,
-                                                transparent);
-  }
+  padding-#{$p}: 1px;
+  background-size: $_dash_bg_size;
+  background-repeat: $_gradient_repeat;
+  background-origin: content-box;
+  background-position: $_bg_pos;
 }

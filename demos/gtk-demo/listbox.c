@@ -164,6 +164,7 @@ gtk_message_row_update (GtkMessageRow *row)
   s = g_date_time_format (t, "%X - %e %b %Y");
   gtk_label_set_text (priv->detailed_time_label, s);
   g_free (s);
+  g_date_time_unref (t);
 
   gtk_widget_set_visible (GTK_WIDGET(priv->n_favorites_label),
                           priv->message->n_favorites != 0);
@@ -295,7 +296,7 @@ gtk_message_row_new (GtkMessage *message)
 static int
 gtk_message_row_sort (GtkMessageRow *a, GtkMessageRow *b, gpointer data)
 {
-  return a->priv->message->time - b->priv->message->time;
+  return b->priv->message->time - a->priv->message->time;
 }
 
 static void
@@ -358,6 +359,7 @@ do_listbox (GtkWidget *do_widget)
         }
 
       g_strfreev (lines);
+      g_bytes_unref (data);
     }
 
   if (!gtk_widget_get_visible (window))

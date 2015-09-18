@@ -111,6 +111,7 @@ gtk_cell_renderer_pixbuf_init (GtkCellRendererPixbuf *cellpixbuf)
   priv->icon_helper = _gtk_icon_helper_new ();
   _gtk_icon_helper_set_force_scale_pixbuf (priv->icon_helper, TRUE);
   priv->icon_size = GTK_ICON_SIZE_MENU;
+  priv->follow_state = TRUE;
 }
 
 static void
@@ -168,6 +169,11 @@ gtk_cell_renderer_pixbuf_class_init (GtkCellRendererPixbufClass *class)
 							P_("Pixbuf for closed expander"),
 							GDK_TYPE_PIXBUF,
 							GTK_PARAM_READWRITE));
+  /**
+   * GtkCellRendererPixbuf:surface:
+   *
+   * Since: 3.10
+   */
   g_object_class_install_property (object_class,
 				   PROP_SURFACE,
 				   g_param_spec_boxed ("surface",
@@ -232,6 +238,8 @@ gtk_cell_renderer_pixbuf_class_init (GtkCellRendererPixbufClass *class)
    * according to the #GtkCellRendererState.
    *
    * Since: 2.8
+   *
+   * Deprecated: 3.16: Cell renderers always follow state.
    */
   g_object_class_install_property (object_class,
 				   PROP_FOLLOW_STATE,
@@ -239,8 +247,8 @@ gtk_cell_renderer_pixbuf_class_init (GtkCellRendererPixbufClass *class)
  							 P_("Follow State"),
  							 P_("Whether the rendered pixbuf should be "
 							    "colorized according to the state"),
- 							 FALSE,
- 							 GTK_PARAM_READWRITE));
+ 							 TRUE,
+ 							 GTK_PARAM_READWRITE | G_PARAM_DEPRECATED));
 
   /**
    * GtkCellRendererPixbuf:gicon:
@@ -312,12 +320,14 @@ gtk_cell_renderer_pixbuf_get_property (GObject        *object,
 }
 
 static void
-gtk_cell_renderer_pixbuf_reset (GtkCellRendererPixbuf *cellpixbuf)
+notify_old_storage_type (GtkCellRendererPixbuf *cellpixbuf,
+                         GtkImageType           new_storage_type,
+                         GtkImageType           old_storage_type)
 {
-  GtkCellRendererPixbufPrivate *priv = cellpixbuf->priv;
-  GtkImageType storage_type = _gtk_icon_helper_get_storage_type (priv->icon_helper);
+  if (new_storage_type == old_storage_type)
+    return;
 
-  switch (storage_type)
+  switch (old_storage_type)
     {
     case GTK_IMAGE_SURFACE:
       g_object_notify (G_OBJECT (cellpixbuf), "surface");
@@ -326,7 +336,7 @@ gtk_cell_renderer_pixbuf_reset (GtkCellRendererPixbuf *cellpixbuf)
       g_object_notify (G_OBJECT (cellpixbuf), "pixbuf");
       break;
     case GTK_IMAGE_STOCK:
-      g_object_notify (G_OBJECT (cellpixbuf), "stock-id");      
+      g_object_notify (G_OBJECT (cellpixbuf), "stock-id");
       break;
     case GTK_IMAGE_ICON_NAME:
       g_object_notify (G_OBJECT (cellpixbuf), "icon-name");
@@ -338,8 +348,6 @@ gtk_cell_renderer_pixbuf_reset (GtkCellRendererPixbuf *cellpixbuf)
     default:
       break;
     }
-
-  _gtk_icon_helper_clear (priv->icon_helper);
 }
 
 static void
@@ -350,11 +358,12 @@ gtk_cell_renderer_pixbuf_set_property (GObject      *object,
 {
   GtkCellRendererPixbuf *cellpixbuf = GTK_CELL_RENDERER_PIXBUF (object);
   GtkCellRendererPixbufPrivate *priv = cellpixbuf->priv;
+  GtkImageType old_storage_type = _gtk_icon_helper_get_storage_type (priv->icon_helper);
 
   switch (param_id)
     {
     case PROP_PIXBUF:
-      gtk_cell_renderer_pixbuf_reset (cellpixbuf);
+      notify_old_storage_type (cellpixbuf, GTK_IMAGE_PIXBUF, old_storage_type);
       _gtk_icon_helper_set_pixbuf (priv->icon_helper, g_value_get_object (value));
       break;
     case PROP_PIXBUF_EXPANDER_OPEN:
@@ -368,11 +377,11 @@ gtk_cell_renderer_pixbuf_set_property (GObject      *object,
       priv->pixbuf_expander_closed = (GdkPixbuf*) g_value_dup_object (value);
       break;
     case PROP_SURFACE:
-      gtk_cell_renderer_pixbuf_reset (cellpixbuf);
+      notify_old_storage_type (cellpixbuf, GTK_IMAGE_SURFACE, old_storage_type);
       _gtk_icon_helper_set_surface (priv->icon_helper, g_value_get_boxed (value));
       break;
     case PROP_STOCK_ID:
-      gtk_cell_renderer_pixbuf_reset (cellpixbuf);
+      notify_old_storage_type (cellpixbuf, GTK_IMAGE_STOCK, old_storage_type);
       _gtk_icon_helper_set_stock_id (priv->icon_helper, g_value_get_string (value), priv->icon_size);
       break;
     case PROP_STOCK_SIZE:
@@ -384,14 +393,14 @@ gtk_cell_renderer_pixbuf_set_property (GObject      *object,
       priv->stock_detail = g_value_dup_string (value);
       break;
     case PROP_ICON_NAME:
-      gtk_cell_renderer_pixbuf_reset (cellpixbuf);
+      notify_old_storage_type (cellpixbuf, GTK_IMAGE_ICON_NAME, old_storage_type);
       _gtk_icon_helper_set_icon_name (priv->icon_helper, g_value_get_string (value), priv->icon_size);
       break;
     case PROP_FOLLOW_STATE:
       priv->follow_state = g_value_get_boolean (value);
       break;
     case PROP_GICON:
-      gtk_cell_renderer_pixbuf_reset (cellpixbuf);
+      notify_old_storage_type (cellpixbuf, GTK_IMAGE_GICON, old_storage_type);
       _gtk_icon_helper_set_gicon (priv->icon_helper, g_value_get_object (value), priv->icon_size);
       break;
     default:
@@ -511,7 +520,6 @@ gtk_cell_renderer_pixbuf_render (GtkCellRenderer      *cell,
   GdkRectangle draw_rect;
   gboolean is_expander;
   gint xpad, ypad;
-  GtkStateFlags state;
   GtkIconHelper *icon_helper = NULL;
 
   gtk_cell_renderer_pixbuf_get_size (cell, widget, (GdkRectangle *) cell_area,
@@ -532,12 +540,6 @@ gtk_cell_renderer_pixbuf_render (GtkCellRenderer      *cell,
   context = gtk_widget_get_style_context (widget);
   gtk_style_context_save (context);
 
-  state = gtk_cell_renderer_get_state (cell, widget, flags);
-
-  if (!priv->follow_state)
-    state &= ~(GTK_STATE_FLAG_FOCUSED | GTK_STATE_FLAG_PRELIGHT | GTK_STATE_FLAG_SELECTED);
-
-  gtk_style_context_set_state (context, state);
   gtk_style_context_add_class (context, GTK_STYLE_CLASS_IMAGE);
 
   g_object_get (cell, "is-expander", &is_expander, NULL);

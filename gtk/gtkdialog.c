@@ -42,6 +42,7 @@
 #include "gtkbindings.h"
 #include "gtkprivate.h"
 #include "gtkbuildable.h"
+#include "gtkbuilderprivate.h"
 #include "gtksettings.h"
 #include "gtktypebuiltins.h"
 #include "deprecated/gtkstock.h"
@@ -160,7 +161,9 @@
  *     <object class="GtkButton" id="button_cancel"/>
  *   </child>
  *   <child type="action">
- *     <object class="GtkButton" id="button_ok"/>
+ *     <object class="GtkButton" id="button_ok">
+ *       <property name="can-default">True</property>
+ *     </object>
  *   </child>
  *   <action-widgets>
  *     <action-widget response="cancel">button_cancel</action-widget>
@@ -693,8 +696,9 @@ update_spacings (GtkDialog *dialog)
       _gtk_box_set_spacing_set (GTK_BOX (priv->vbox), FALSE);
     }
 
-  gtk_box_set_spacing (GTK_BOX (priv->action_area),
-                       button_spacing);
+  /* don't set spacing when buttons are linked */
+  if (gtk_button_box_get_layout (GTK_BUTTON_BOX (priv->action_area)) != GTK_BUTTONBOX_EXPAND)
+    gtk_box_set_spacing (GTK_BOX (priv->action_area), button_spacing);
 
   if (!_gtk_container_get_border_width_set (GTK_CONTAINER (priv->action_area)))
     {
@@ -1664,125 +1668,157 @@ typedef struct {
   gchar *widget_name;
   gint response_id;
   gboolean is_default;
+  gint line;
+  gint col;
 } ActionWidgetInfo;
 
 typedef struct {
   GtkDialog *dialog;
   GtkBuilder *builder;
   GSList *items;
-  gchar *response;
+  gint response_id;
   gboolean is_default;
-} ActionWidgetsSubParserData;
-
-static gint
-parse_response_id (const gchar *response_attr)
-{
-  int response_id;
-  GEnumClass *enum_class = NULL;
-  GEnumValue *enum_value;
-
-  response_id = g_ascii_strtoll (response_attr, NULL, 10);
-  if (response_id != 0)
-    goto out;
-
-  enum_class = g_type_class_ref (GTK_TYPE_RESPONSE_TYPE);
-  enum_value = g_enum_get_value_by_nick (enum_class, response_attr);
-  if (enum_value == NULL)
-    goto out;
-
-  response_id = enum_value->value;
-
- out:
-  if (enum_class)
-    g_type_class_unref (enum_class);
-
-  return response_id;
-}
+  gboolean is_text;
+  GString *string;
+  gboolean in_action_widgets;
+  gint line;
+  gint col;
+} SubParserData;
 
 static void
-attributes_start_element (GMarkupParseContext *context,
-			  const gchar         *element_name,
-			  const gchar        **names,
-			  const gchar        **values,
-			  gpointer             user_data,
-			  GError             **error)
+parser_start_element (GMarkupParseContext *context,
+                      const gchar         *element_name,
+                      const gchar        **names,
+                      const gchar        **values,
+                      gpointer             user_data,
+                      GError             **error)
 {
-  ActionWidgetsSubParserData *parser_data = (ActionWidgetsSubParserData*)user_data;
-  guint i;
+  SubParserData *data = (SubParserData*)user_data;
 
   if (strcmp (element_name, "action-widget") == 0)
     {
-      for (i = 0; names[i]; i++)
+      const gchar *response;
+      gboolean is_default = FALSE;
+      GValue gvalue = G_VALUE_INIT;
+
+      if (!_gtk_builder_check_parent (data->builder, context, "action-widgets", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_STRING, "response", &response,
+                                        G_MARKUP_COLLECT_BOOLEAN|G_MARKUP_COLLECT_OPTIONAL, "default", &is_default,
+                                        G_MARKUP_COLLECT_INVALID))
         {
-	  if (strcmp (names[i], "response") == 0)
-	    parser_data->response = g_strdup (values[i]);
-          else if (strcmp (names[i], "default") == 0)
-            parser_data->is_default = TRUE;
+          _gtk_builder_prefix_error (data->builder, context, error);
+          return;
         }
+
+      if (!gtk_builder_value_from_string_type (data->builder, GTK_TYPE_RESPONSE_TYPE, response, &gvalue, error))
+        {
+          _gtk_builder_prefix_error (data->builder, context, error);
+          return;
+        }
+
+      data->response_id = g_value_get_enum (&gvalue);
+      data->is_default = is_default;
+      data->is_text = TRUE;
+      g_string_set_size (data->string, 0);
+      g_markup_parse_context_get_position (context, &data->line, &data->col);
     }
   else if (strcmp (element_name, "action-widgets") == 0)
-    return;
+    {
+      if (!_gtk_builder_check_parent (data->builder, context, "object", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_INVALID, NULL, NULL,
+                                        G_MARKUP_COLLECT_INVALID))
+        _gtk_builder_prefix_error (data->builder, context, error);
+
+      data->in_action_widgets = TRUE;
+    }
   else
-    g_warning ("Unsupported tag for GtkDialog: %s\n", element_name);
+    {
+      _gtk_builder_error_unhandled_tag (data->builder, context,
+                                        "GtkDialog", element_name,
+                                        error);
+    }
 }
 
 static void
-attributes_text_element (GMarkupParseContext *context,
-			 const gchar         *text,
-			 gsize                text_len,
-			 gpointer             user_data,
-			 GError             **error)
+parser_text_element (GMarkupParseContext *context,
+                     const gchar         *text,
+                     gsize                text_len,
+                     gpointer             user_data,
+                     GError             **error)
 {
-  ActionWidgetsSubParserData *parser_data = (ActionWidgetsSubParserData*)user_data;
-  ActionWidgetInfo *item;
+  SubParserData *data = (SubParserData*)user_data;
 
-  
-  if (!parser_data->response)
-    return;
-
-  item = g_new (ActionWidgetInfo, 1);
-  item->widget_name = g_strndup (text, text_len);
-  item->response_id = parse_response_id (parser_data->response);
-  g_free (parser_data->response);
-  item->is_default = parser_data->is_default;
-  parser_data->items = g_slist_prepend (parser_data->items, item);
-  parser_data->response = NULL;
-  parser_data->is_default = FALSE;
+  if (data->is_text)
+    g_string_append_len (data->string, text, text_len);
 }
 
-static const GMarkupParser attributes_parser =
+static void
+parser_end_element (GMarkupParseContext  *context,
+                    const gchar          *element_name,
+                    gpointer              user_data,
+                    GError              **error)
+{
+  SubParserData *data = (SubParserData*)user_data;
+
+  if (data->is_text)
+    {
+      ActionWidgetInfo *item;
+
+      item = g_new (ActionWidgetInfo, 1);
+      item->widget_name = g_strdup (data->string->str);
+      item->response_id = data->response_id;
+      item->is_default = data->is_default;
+      item->line = data->line;
+      item->col = data->col;
+
+      data->items = g_slist_prepend (data->items, item);
+      data->is_default = FALSE;
+      data->is_text = FALSE;
+    }
+}
+
+static const GMarkupParser sub_parser =
   {
-    attributes_start_element,
-    NULL,
-    attributes_text_element,
+    parser_start_element,
+    parser_end_element,
+    parser_text_element,
   };
 
 static gboolean
 gtk_dialog_buildable_custom_tag_start (GtkBuildable  *buildable,
-				       GtkBuilder    *builder,
-				       GObject       *child,
-				       const gchar   *tagname,
-				       GMarkupParser *parser,
-				       gpointer      *data)
+                                       GtkBuilder    *builder,
+                                       GObject       *child,
+                                       const gchar   *tagname,
+                                       GMarkupParser *parser,
+                                       gpointer      *parser_data)
 {
-  ActionWidgetsSubParserData *parser_data;
+  SubParserData *data;
 
   if (child)
     return FALSE;
 
   if (strcmp (tagname, "action-widgets") == 0)
     {
-      parser_data = g_slice_new0 (ActionWidgetsSubParserData);
-      parser_data->dialog = GTK_DIALOG (buildable);
-      parser_data->items = NULL;
+      data = g_slice_new0 (SubParserData);
+      data->dialog = GTK_DIALOG (buildable);
+      data->builder = builder;
+      data->string = g_string_new ("");
+      data->items = NULL;
+      data->in_action_widgets = FALSE;
 
-      *parser = attributes_parser;
-      *data = parser_data;
+      *parser = sub_parser;
+      *parser_data = data;
       return TRUE;
     }
 
   return parent_buildable_iface->custom_tag_start (buildable, builder, child,
-						   tagname, parser, data);
+						   tagname, parser, parser_data);
 }
 
 static void
@@ -1795,7 +1831,7 @@ gtk_dialog_buildable_custom_finished (GtkBuildable *buildable,
   GtkDialog *dialog = GTK_DIALOG (buildable);
   GtkDialogPrivate *priv = dialog->priv;
   GSList *l;
-  ActionWidgetsSubParserData *parser_data;
+  SubParserData *data;
   GObject *object;
   ResponseData *ad;
   guint signal_id;
@@ -1807,22 +1843,17 @@ gtk_dialog_buildable_custom_finished (GtkBuildable *buildable,
       return;
     }
 
-  parser_data = (ActionWidgetsSubParserData*)user_data;
-  parser_data->items = g_slist_reverse (parser_data->items);
+  data = (SubParserData*)user_data;
+  data->items = g_slist_reverse (data->items);
 
-  for (l = parser_data->items; l; l = l->next)
+  for (l = data->items; l; l = l->next)
     {
       ActionWidgetInfo *item = l->data;
       gboolean is_action;
 
-      object = gtk_builder_get_object (builder, item->widget_name);
+      object = _gtk_builder_lookup_object (builder, item->widget_name, item->line, item->col);
       if (!object)
-	{
-	  g_warning ("Unknown object %s specified in action-widgets of %s",
-		     item->widget_name,
-		     gtk_buildable_get_name (GTK_BUILDABLE (buildable)));
-	  continue;
-	}
+        continue;
 
       /* If the widget already has reponse data at this point, it
        * was either added by gtk_dialog_add_action_widget(), or via
@@ -1865,8 +1896,10 @@ gtk_dialog_buildable_custom_finished (GtkBuildable *buildable,
       g_free (item->widget_name);
       g_free (item);
     }
-  g_slist_free (parser_data->items);
-  g_slice_free (ActionWidgetsSubParserData, parser_data);
+
+  g_slist_free (data->items);
+  g_string_free (data->string, TRUE);
+  g_slice_free (SubParserData, data);
 
   update_suggested_action (dialog);
 }
@@ -1887,7 +1920,7 @@ gtk_dialog_buildable_add_child (GtkBuildable  *buildable,
       priv->headerbar = GTK_WIDGET (child);
       gtk_window_set_titlebar (GTK_WINDOW (buildable), priv->headerbar);
     }
-  else if (g_strcmp0 (type, "action") == 0)
+  else if (g_str_equal (type, "action"))
     gtk_dialog_add_action_widget (GTK_DIALOG (buildable), GTK_WIDGET (child), GTK_RESPONSE_NONE);
   else
     GTK_BUILDER_WARN_INVALID_CHILD_TYPE (buildable, type);

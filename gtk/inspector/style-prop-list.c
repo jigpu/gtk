@@ -27,6 +27,9 @@
 
 #include "gtkcssproviderprivate.h"
 #include "gtkcssstylepropertyprivate.h"
+#include "gtkcsssectionprivate.h"
+#include "gtkcssstyleprivate.h"
+#include "gtkcssvalueprivate.h"
 #include "gtkliststore.h"
 #include "gtksettings.h"
 #include "gtktreeview.h"
@@ -39,14 +42,11 @@ enum
 {
   COLUMN_NAME,
   COLUMN_VALUE,
-  COLUMN_LOCATION,
-  COLUMN_URI,
-  COLUMN_LINE
+  COLUMN_LOCATION
 };
 
 struct _GtkInspectorStylePropListPrivate
 {
-  GHashTable *css_files;
   GtkListStore *model;
   GtkWidget *widget;
   GtkWidget *tree;
@@ -68,116 +68,19 @@ search_close_clicked (GtkWidget                 *button,
 }
 
 static gboolean
-is_keynav_event (GdkEvent *event)
-{
-  GdkModifierType state = 0;
-  guint keyval;
-
-  if (!gdk_event_get_keyval (event, &keyval))
-    return FALSE;
-
-  gdk_event_get_state (event, &state);
-
-  if (keyval == GDK_KEY_Tab       || keyval == GDK_KEY_KP_Tab ||
-      keyval == GDK_KEY_Up        || keyval == GDK_KEY_KP_Up ||
-      keyval == GDK_KEY_Down      || keyval == GDK_KEY_KP_Down ||
-      keyval == GDK_KEY_Left      || keyval == GDK_KEY_KP_Left ||
-      keyval == GDK_KEY_Right     || keyval == GDK_KEY_KP_Right ||
-      keyval == GDK_KEY_Home      || keyval == GDK_KEY_KP_Home ||
-      keyval == GDK_KEY_End       || keyval == GDK_KEY_KP_End ||
-      keyval == GDK_KEY_Page_Up   || keyval == GDK_KEY_KP_Page_Up ||
-      keyval == GDK_KEY_Page_Down || keyval == GDK_KEY_KP_Page_Down ||
-      ((state & (GDK_CONTROL_MASK | GDK_MOD1_MASK)) != 0))
-        return TRUE;
-
-  /* Other navigation events should get automatically
-   * ignored as they will not change the content of the entry
-   */
-  return FALSE;
-}
-
-static void
-preedit_changed_cb (GtkEntry  *entry,
-                    GtkWidget *popup,
-                    gboolean  *preedit_changed)
-{
-  *preedit_changed = TRUE;
-}
-
-static gboolean
 key_press_event (GtkWidget                 *window,
                  GdkEvent                  *event,
                  GtkInspectorStylePropList *pl)
 {
-  gboolean handled;
-  gboolean preedit_changed;
-  guint preedit_change_id;
-  gboolean res;
-  gchar *old_text, *new_text;
-
   if (!gtk_widget_get_mapped (GTK_WIDGET (pl)))
     return GDK_EVENT_PROPAGATE;
 
-  if (is_keynav_event (event) ||
-      event->key.keyval == GDK_KEY_space ||
-      event->key.keyval == GDK_KEY_Menu)
-    return GDK_EVENT_PROPAGATE;
-
-  if (event->key.keyval == GDK_KEY_Return ||
-      event->key.keyval == GDK_KEY_ISO_Enter ||
-      event->key.keyval == GDK_KEY_KP_Enter)
-    {
-      GtkTreeSelection *selection;
-      GtkTreeModel *model;
-      GtkTreeIter iter;
-      GtkTreePath *path;
-
-      selection = gtk_tree_view_get_selection (GTK_TREE_VIEW (pl->priv->tree));
-      if (gtk_tree_selection_get_selected (selection, &model, &iter))
-        {
-          path = gtk_tree_model_get_path (model, &iter);
-          gtk_tree_view_row_activated (GTK_TREE_VIEW (pl->priv->tree),
-                                       path,
-                                       pl->priv->name_column);
-          gtk_tree_path_free (path);
-
-          return GDK_EVENT_STOP;
-        }
-      else
-        return GDK_EVENT_PROPAGATE;
-    }
-
-  if (event->key.keyval == GDK_KEY_Escape)
-    {
-      gtk_entry_set_text (GTK_ENTRY (pl->priv->search_entry), "");
-      gtk_stack_set_visible_child_name (GTK_STACK (pl->priv->search_stack), "title");
-      return GDK_EVENT_STOP;
-    }
-
-  if (!gtk_widget_get_realized (pl->priv->search_entry))
-    gtk_widget_realize (pl->priv->search_entry);
-
-  handled = FALSE;
-  preedit_changed = FALSE;
-  preedit_change_id = g_signal_connect (pl->priv->search_entry, "preedit-changed",
-                                        G_CALLBACK (preedit_changed_cb), &preedit_changed);
-
-  old_text = g_strdup (gtk_entry_get_text (GTK_ENTRY (pl->priv->search_entry)));
-  res = gtk_widget_event (pl->priv->search_entry, event);
-  new_text = g_strdup (gtk_entry_get_text (GTK_ENTRY (pl->priv->search_entry)));
-
-  g_signal_handler_disconnect (pl->priv->search_entry, preedit_change_id);
-
-  if ((res && g_strcmp0 (new_text, old_text) != 0) || preedit_changed)
+  if (gtk_search_entry_handle_event (GTK_SEARCH_ENTRY (pl->priv->search_entry), event))
     {
       gtk_stack_set_visible_child_name (GTK_STACK (pl->priv->search_stack), "search");
-      handled = TRUE;
+      return GDK_EVENT_STOP;
     }
-
-  g_free (old_text);
-  g_free (new_text);
-
-  return handled ? GDK_EVENT_STOP : GDK_EVENT_PROPAGATE;
+  return GDK_EVENT_PROPAGATE;
 }
 
 static void
@@ -202,15 +105,11 @@ gtk_inspector_style_prop_list_init (GtkInspectorStylePropList *pl)
                                         GTK_SORT_ASCENDING);
   gtk_tree_view_set_search_entry (GTK_TREE_VIEW (pl->priv->tree),
                                   GTK_ENTRY (pl->priv->search_entry));
-  pl->priv->css_files = g_hash_table_new_full (g_file_hash, (GEqualFunc) g_file_equal,
-                                           g_object_unref, (GDestroyNotify) g_strfreev);
 
   pl->priv->prop_iters = g_hash_table_new_full (g_str_hash,
                                                 g_str_equal,
                                                 NULL,
                                                 (GDestroyNotify) gtk_tree_iter_free);
-
-  g_signal_connect (pl, "hierarchy-changed", G_CALLBACK (hierarchy_changed), NULL);
 
   for (i = 0; i < _gtk_css_style_property_get_n_properties (); i++)
     {
@@ -246,7 +145,6 @@ finalize (GObject *object)
 {
   GtkInspectorStylePropList *pl = GTK_INSPECTOR_STYLE_PROP_LIST (object);
 
-  g_hash_table_unref (pl->priv->css_files);
   g_hash_table_unref (pl->priv->prop_iters);
 
   G_OBJECT_CLASS (gtk_inspector_style_prop_list_parent_class)->finalize (object);
@@ -284,74 +182,7 @@ gtk_inspector_style_prop_list_class_init (GtkInspectorStylePropListClass *klass)
   gtk_widget_class_bind_template_child_private (widget_class, GtkInspectorStylePropList, object_title);
   gtk_widget_class_bind_template_child_private (widget_class, GtkInspectorStylePropList, name_column);
   gtk_widget_class_bind_template_callback (widget_class, search_close_clicked);
-}
-
-static gchar *
-strip_property (const gchar *property)
-{
-  gchar **split;
-  gchar *value;
-
-  split = g_strsplit_set (property, ":;", 3);
-  if (!split[0] || !split[1])
-    value = g_strdup ("");
-  else
-    value = g_strdup (split[1]);
-
-  g_strfreev (split);
-
-  return value;
-}
-
-static gchar *
-get_css_content (GtkInspectorStylePropList *self,
-                 GFile                     *file,
-                 guint                      start_line,
-                 guint                      end_line)
-{
-  GtkInspectorStylePropListPrivate *priv = self->priv;
-  guint i;
-  guint contents_lines;
-  gchar *value, *property;
-  gchar **contents;
-
-  contents = g_hash_table_lookup (priv->css_files, file);
-  if (!contents)
-    {
-      gchar *tmp;
-
-      if (g_file_load_contents (file, NULL, &tmp, NULL, NULL, NULL))
-        {
-          contents = g_strsplit_set (tmp, "\n\r", -1);
-          g_free (tmp);
-        }
-      else
-        {
-          contents =  g_strsplit ("", "", -1);
-        }
-
-      g_object_ref (file);
-      g_hash_table_insert (priv->css_files, file, contents);
-    }
-
-  contents_lines = g_strv_length (contents);
-  property = g_strdup ("");
-  for (i = start_line; (i < end_line + 1) && (i < contents_lines); ++i)
-    {
-      gchar *s1, *s2;
-
-      s1 = g_strdup (contents[i]);
-      s1 = g_strstrip (s1);
-      s2 = g_strconcat (property, s1, NULL);
-      g_free (property);
-      g_free (s1);
-      property = s2;
-    }
-
-  value = strip_property (property);
-  g_free (property);
-
-  return value;
+  gtk_widget_class_bind_template_callback (widget_class, hierarchy_changed);
 }
 
 static void
@@ -359,9 +190,11 @@ populate (GtkInspectorStylePropList *self)
 {
   GtkInspectorStylePropListPrivate *priv = self->priv;
   GtkStyleContext *context;
+  GtkCssStyle *style;
   gint i;
 
   context = gtk_widget_get_style_context (priv->widget);
+  style = gtk_style_context_lookup_style (context);
 
   for (i = 0; i < _gtk_css_style_property_get_n_properties (); i++)
     {
@@ -371,71 +204,28 @@ populate (GtkInspectorStylePropList *self)
       GtkCssSection *section;
       gchar *location;
       gchar *value;
-      gchar *uri;
-      guint start_line, end_line;
 
       prop = _gtk_css_style_property_lookup_by_id (i);
       name = _gtk_style_property_get_name (GTK_STYLE_PROPERTY (prop));
 
       iter = (GtkTreeIter *)g_hash_table_lookup (priv->prop_iters, name);
 
-      section = gtk_style_context_get_section (context, name);
+      value = _gtk_css_value_to_string (gtk_css_style_get_value (style, i));
+
+      section = gtk_css_style_get_section (style, i);
       if (section)
-        {
-          GFileInfo *info;
-          GFile *file;
-          const gchar *path;
-
-          start_line = gtk_css_section_get_start_line (section);
-          end_line = gtk_css_section_get_end_line (section);
-
-          file = gtk_css_section_get_file (section);
-          if (file)
-            {
-              info = g_file_query_info (file, G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME, 0, NULL, NULL);
-
-              if (info)
-                path = g_file_info_get_display_name (info);
-              else
-                path = "<broken file>";
-
-              uri = g_file_get_uri (file);
-              value = get_css_content (self, file, start_line, end_line);
-            }
-          else
-            {
-              info = NULL;
-              path = "<data>";
-              uri = NULL;
-              value = NULL;
-            }
-
-          if (end_line != start_line)
-            location = g_strdup_printf ("%s:%u-%u", path, start_line + 1, end_line + 1);
-          else
-            location = g_strdup_printf ("%s:%u", path, start_line + 1);
-          if (info)
-            g_object_unref (info);
-        }
+        location = _gtk_css_section_to_string (section);
       else
-        {
-          location = NULL;
-          value = NULL;
-          uri = NULL;
-          start_line = -1;
-        }
+        location = NULL;
 
       gtk_list_store_set (priv->model,
                           iter,
                           COLUMN_VALUE, value,
                           COLUMN_LOCATION, location,
-                          COLUMN_URI, uri,
-                          COLUMN_LINE, start_line + 1,
                           -1);
 
       g_free (location);
       g_free (value);
-      g_free (uri);
     }
 }
 

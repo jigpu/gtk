@@ -191,6 +191,7 @@ clear_flash (GtkInspectorWindow *iw)
     {
       gtk_widget_queue_draw (iw->flash_widget);
       g_signal_handlers_disconnect_by_func (iw->flash_widget, draw_flash, iw);
+      g_signal_handlers_disconnect_by_func (iw->flash_widget, clear_flash, iw);
       iw->flash_widget = NULL;
     }
 }
@@ -204,6 +205,7 @@ start_flash (GtkInspectorWindow *iw,
   iw->flash_count = 1;
   iw->flash_widget = widget;
   g_signal_connect_after (widget, "draw", G_CALLBACK (draw_flash), iw);
+  g_signal_connect_swapped (widget, "unmap", G_CALLBACK (clear_flash), iw);
   gtk_widget_queue_draw (widget);
 }
 
@@ -212,13 +214,14 @@ select_widget (GtkInspectorWindow *iw,
                GtkWidget          *widget)
 {
   GtkInspectorObjectTree *wt = GTK_INSPECTOR_OBJECT_TREE (iw->object_tree);
-  GtkTreeIter iter;
 
   iw->selected_widget = widget;
 
-  if (!gtk_inspector_object_tree_find_object (wt, G_OBJECT (widget), &iter))
-    gtk_inspector_object_tree_scan (wt, gtk_widget_get_toplevel (widget));
-  gtk_inspector_object_tree_select_object (wt, G_OBJECT (widget));
+  if (!gtk_inspector_object_tree_select_object (wt, G_OBJECT (widget)))
+    {
+      gtk_inspector_object_tree_scan (wt, gtk_widget_get_toplevel (widget));
+      gtk_inspector_object_tree_select_object (wt, G_OBJECT (widget));
+    }
 }
 
 static void
@@ -374,7 +377,7 @@ gtk_inspector_on_inspect (GtkWidget          *button,
     }
 
   display = gdk_display_get_default ();
-  cursor = gdk_cursor_new_for_display (display, GDK_CROSSHAIR);
+  cursor = gdk_cursor_new_from_name (display, "crosshair");
   device = gdk_device_manager_get_client_pointer (gdk_display_get_device_manager (display));
   status = gdk_device_grab (device,
                             gtk_widget_get_window (iw->invisible),
@@ -402,10 +405,14 @@ draw_flash (GtkWidget          *widget,
 
   if (GTK_IS_WINDOW (widget))
     {
+      GtkWidget *child = gtk_bin_get_child (GTK_BIN (widget));
       /* We don't want to draw the drag highlight around the
        * CSD window decorations
        */
-      gtk_widget_get_allocation (gtk_bin_get_child (GTK_BIN (widget)), &alloc);
+      if (child == NULL)
+        return FALSE;
+
+      gtk_widget_get_allocation (child, &alloc);
     }
   else
     {
@@ -434,6 +441,7 @@ on_flash_timeout (GtkInspectorWindow *iw)
   if (iw->flash_count == 6)
     {
       g_signal_handlers_disconnect_by_func (iw->flash_widget, draw_flash, iw);
+      g_signal_handlers_disconnect_by_func (iw->flash_widget, clear_flash, iw);
       iw->flash_widget = NULL;
       iw->flash_cnx = 0;
 
@@ -471,6 +479,7 @@ void
 gtk_inspector_stop_highlight (GtkWidget *widget)
 {
   g_signal_handlers_disconnect_by_func (widget, draw_flash, NULL);
+  g_signal_handlers_disconnect_by_func (widget, clear_flash, NULL);
   gtk_widget_queue_draw (widget);
 }
 

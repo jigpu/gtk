@@ -24,7 +24,7 @@
 
 G_BEGIN_DECLS
 
-typedef union _GtkCssMatcher GtkCssMatcher;
+typedef struct _GtkCssMatcherNode GtkCssMatcherNode;
 typedef struct _GtkCssMatcherSuperset GtkCssMatcherSuperset;
 typedef struct _GtkCssMatcherWidgetPath GtkCssMatcherWidgetPath;
 typedef struct _GtkCssMatcherClass GtkCssMatcherClass;
@@ -55,9 +55,15 @@ struct _GtkCssMatcherClass {
 
 struct _GtkCssMatcherWidgetPath {
   const GtkCssMatcherClass *klass;
+  const GtkCssNodeDeclaration *decl;
   const GtkWidgetPath      *path;
   guint                     index;
   guint                     sibling_index;
+};
+
+struct _GtkCssMatcherNode {
+  const GtkCssMatcherClass *klass;
+  GtkCssNode               *node;
 };
 
 struct _GtkCssMatcherSuperset {
@@ -69,11 +75,15 @@ struct _GtkCssMatcherSuperset {
 union _GtkCssMatcher {
   const GtkCssMatcherClass *klass;
   GtkCssMatcherWidgetPath   path;
+  GtkCssMatcherNode         node;
   GtkCssMatcherSuperset     superset;
 };
 
 gboolean          _gtk_css_matcher_init           (GtkCssMatcher          *matcher,
-                                                   const GtkWidgetPath    *path) G_GNUC_WARN_UNUSED_RESULT;
+                                                   const GtkWidgetPath    *path,
+                                                   const GtkCssNodeDeclaration *decl) G_GNUC_WARN_UNUSED_RESULT;
+void              _gtk_css_matcher_node_init      (GtkCssMatcher          *matcher,
+                                                   GtkCssNode             *node);
 void              _gtk_css_matcher_any_init       (GtkCssMatcher          *matcher);
 void              _gtk_css_matcher_superset_init  (GtkCssMatcher          *matcher,
                                                    const GtkCssMatcher    *subset,

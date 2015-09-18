@@ -267,16 +267,19 @@ disable_plugin (const gchar *name)
   plugin_menu = find_plugin_menu ();
   if (plugin_menu)
     {
-      const gchar *id;
       gint i;
 
       for (i = 0; i < g_menu_model_get_n_items (plugin_menu); i++)
         {
-           if (g_menu_model_get_item_attribute (plugin_menu, i, "id", "s", &id) &&
-               g_strcmp0 (id, name) == 0)
+           gchar *id;
+           if (g_menu_model_get_item_attribute (plugin_menu, i, "id", "s", &id))
              {
-               g_menu_remove (G_MENU (plugin_menu), i);
-               g_print ("Menus of '%s' plugin removed\n", name);
+               if (g_strcmp0 (id, name) == 0)
+                 {
+                   g_menu_remove (G_MENU (plugin_menu), i);
+                   g_print ("Menus of '%s' plugin removed\n", name);
+                 }
+               g_free (id);
              }
         }
     }
@@ -356,7 +359,7 @@ configure_plugins (GSimpleAction *action,
     {
       g_warning ("%s", error->message);
       g_error_free (error);
-      return;
+      goto out;
     }
 
   dialog = (GtkWidget *)gtk_builder_get_object (builder, "plugin-dialog");
@@ -370,6 +373,9 @@ configure_plugins (GSimpleAction *action,
   g_signal_connect (dialog, "response", G_CALLBACK (gtk_widget_destroy), NULL);
 
   gtk_window_present (GTK_WINDOW (dialog));
+
+out:
+  g_object_unref (builder);
 }
 
 static GActionEntry app_entries[] = {

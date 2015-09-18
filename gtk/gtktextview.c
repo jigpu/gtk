@@ -136,7 +136,9 @@ struct _GtkTextViewPrivate
   guint blink_time;  /* time in msec the cursor has blinked since last user event */
   guint im_spot_idle;
   gchar *im_module;
-  GdkDevice *dnd_device;
+
+  gint dnd_x;
+  gint dnd_y;
 
   GtkTextHandle *text_handle;
   GtkWidget *selection_bubble;
@@ -154,9 +156,18 @@ struct _GtkTextViewPrivate
   GtkAdjustment *hadjustment;
   GtkAdjustment *vadjustment;
 
-  gint xoffset;         /* Offsets between widget coordinates and buffer coordinates */
+  /* X offset between widget coordinates and buffer coordinates
+   * taking left_padding in account
+   */
+  gint xoffset;
+
+  /* Y offset between widget coordinates and buffer coordinates
+   * taking top_padding and top_margin in account
+   */
   gint yoffset;
-  gint width;           /* Width and height of the buffer */
+
+  /* Width and height of the buffer */
+  gint width;
   gint height;
 
   /* This is used to monitor the overall size request 
@@ -212,9 +223,22 @@ struct _GtkTextViewPrivate
   gint pixels_inside_wrap;
   GtkWrapMode wrap_mode;
   GtkJustification justify;
+
   gint left_margin;
   gint right_margin;
+  gint top_margin;
+  gint bottom_margin;
+  gint left_padding;
+  gint right_padding;
+  gint top_padding;
+  gint bottom_padding;
+  gint top_border;
+  gint bottom_border;
+  gint left_border;
+  gint right_border;
+
   gint indent;
+  gint64 handle_place_time;
   PangoTabArray *tabs;
   guint editable : 1;
 
@@ -246,6 +270,7 @@ struct _GtkTextViewPrivate
   guint populate_all   : 1;
 
   guint in_scroll : 1;
+  guint handling_key_event : 1;
 };
 
 struct _GtkTextPendingScroll
@@ -296,6 +321,8 @@ enum
   PROP_JUSTIFICATION,
   PROP_LEFT_MARGIN,
   PROP_RIGHT_MARGIN,
+  PROP_TOP_MARGIN,
+  PROP_BOTTOM_MARGIN,
   PROP_INDENT,
   PROP_TABS,
   PROP_CURSOR_VISIBLE,
@@ -542,6 +569,9 @@ static void gtk_text_view_forall (GtkContainer *container,
                                   gpointer      callback_data);
 
 /* GtkTextHandle handlers */
+static void gtk_text_view_handle_drag_started  (GtkTextHandle         *handle,
+                                                GtkTextHandlePosition  pos,
+                                                GtkTextView           *text_view);
 static void gtk_text_view_handle_dragged       (GtkTextHandle         *handle,
                                                 GtkTextHandlePosition  pos,
                                                 gint                   x,
@@ -567,6 +597,12 @@ static gboolean gtk_text_view_extend_selection (GtkTextView            *text_vie
                                                 const GtkTextIter      *location,
                                                 GtkTextIter            *start,
                                                 GtkTextIter            *end);
+static void extend_selection (GtkTextView          *text_view,
+                              SelectionGranularity  granularity,
+                              const GtkTextIter    *location,
+                              GtkTextIter          *start,
+                              GtkTextIter          *end);
+
 
 
 /* FIXME probably need the focus methods. */
@@ -631,7 +667,6 @@ static gint           text_window_get_height      (GtkTextWindow     *win);
 
 
 static guint signals[LAST_SIGNAL] = { 0 };
-static gboolean test_touchscreen = FALSE;
 
 G_DEFINE_TYPE_WITH_CODE (GtkTextView, gtk_text_view, GTK_TYPE_CONTAINER,
                          G_ADD_PRIVATE (GtkTextView)
@@ -776,7 +811,19 @@ gtk_text_view_class_init (GtkTextViewClass *klass)
                                                       GTK_TYPE_JUSTIFICATION,
                                                       GTK_JUSTIFY_LEFT,
                                                       GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
- 
+
+  /**
+   * GtkTextView:left-margin:
+   *
+   * The default left margin for text in the text view.
+   * Tags in the buffer may override the default.
+   *
+   * Note that this property is confusingly named. In CSS terms,
+   * the value set here is padding, and it is applied in addition
+   * to the padding from the theme.
+   *
+   * Don't confuse this property with #GtkWidget:margin-left.
+   */
   g_object_class_install_property (gobject_class,
                                    PROP_LEFT_MARGIN,
                                    g_param_spec_int ("left-margin",
@@ -785,11 +832,65 @@ gtk_text_view_class_init (GtkTextViewClass *klass)
                                                      0, G_MAXINT, 0,
                                                      GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
 
+  /**
+   * GtkTextView:right-margin:
+   *
+   * The default right margin for text in the text view.
+   * Tags in the buffer may override the default.
+   *
+   * Note that this property is confusingly named. In CSS terms,
+   * the value set here is padding, and it is applied in addition
+   * to the padding from the theme.
+   *
+   * Don't confuse this property with #GtkWidget:margin-right.
+   */
   g_object_class_install_property (gobject_class,
                                    PROP_RIGHT_MARGIN,
                                    g_param_spec_int ("right-margin",
                                                      P_("Right Margin"),
                                                      P_("Width of the right margin in pixels"),
+                                                     0, G_MAXINT, 0,
+                                                     GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+
+  /**
+   * GtkTextView:top-margin:
+   *
+   * The top margin for text in the text view.
+   *
+   * Note that this property is confusingly named. In CSS terms,
+   * the value set here is padding, and it is applied in addition
+   * to the padding from the theme.
+   *
+   * Don't confuse this property with #GtkWidget:margin-top.
+   *
+   * Since: 3.18
+   */
+  g_object_class_install_property (gobject_class,
+                                   PROP_TOP_MARGIN,
+                                   g_param_spec_int ("top-margin",
+                                                     P_("Top Margin"),
+                                                     P_("Height of the top margin in pixels"),
+                                                     0, G_MAXINT, 0,
+                                                     GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
+
+  /**
+   * GtkTextView:bottom-margin:
+   *
+   * The bottom margin for text in the text view.
+   *
+   * Note that this property is confusingly named. In CSS terms,
+   * the value set here is padding, and it is applied in addition
+   * to the padding from the theme.
+   *
+   * Don't confuse this property with #GtkWidget:margin-bottom.
+   *
+   * Since: 3.18
+   */
+  g_object_class_install_property (gobject_class,
+                                   PROP_BOTTOM_MARGIN,
+                                   g_param_spec_int ("bottom-margin",
+                                                     P_("Bottom Margin"),
+                                                     P_("Height of the bottom margin in pixels"),
                                                      0, G_MAXINT, 0,
                                                      GTK_PARAM_READWRITE|G_PARAM_EXPLICIT_NOTIFY));
 
@@ -1532,7 +1633,6 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 				GTK_TYPE_DIRECTION_TYPE, GTK_DIR_TAB_BACKWARD);
 
   gtk_widget_class_set_accessible_type (widget_class, GTK_TYPE_TEXT_VIEW_ACCESSIBLE);
-  test_touchscreen = g_getenv ("GTK_TEST_TOUCHSCREEN") != NULL;
 
   quark_text_selection_data =
     g_quark_from_static_string ("gtk-text-view-text-selection-data");
@@ -1544,6 +1644,7 @@ gtk_text_view_init (GtkTextView *text_view)
   GtkWidget *widget = GTK_WIDGET (text_view);
   GtkTargetList *target_list;
   GtkTextViewPrivate *priv;
+  GtkStyleContext *style_context;
 
   text_view->priv = gtk_text_view_get_instance_private (text_view);
   priv = text_view->priv;
@@ -1552,14 +1653,15 @@ gtk_text_view_init (GtkTextView *text_view)
 
   priv->pixel_cache = _gtk_pixel_cache_new ();
 
+  style_context = gtk_widget_get_style_context (GTK_WIDGET (text_view));
+  _gtk_pixel_cache_set_style_context (priv->pixel_cache, style_context);
+
   /* Set up default style */
   priv->wrap_mode = GTK_WRAP_NONE;
   priv->pixels_above_lines = 0;
   priv->pixels_below_lines = 0;
   priv->pixels_inside_wrap = 0;
   priv->justify = GTK_JUSTIFY_LEFT;
-  priv->left_margin = 0;
-  priv->right_margin = 0;
   priv->indent = 0;
   priv->tabs = NULL;
   priv->editable = TRUE;
@@ -1624,6 +1726,8 @@ _gtk_text_view_ensure_text_handles (GtkTextView *text_view)
     return;
 
   priv->text_handle = _gtk_text_handle_new (GTK_WIDGET (text_view));
+  g_signal_connect (priv->text_handle, "drag-started",
+                    G_CALLBACK (gtk_text_view_handle_drag_started), text_view);
   g_signal_connect (priv->text_handle, "handle-dragged",
                     G_CALLBACK (gtk_text_view_handle_dragged), text_view);
   g_signal_connect (priv->text_handle, "drag-finished",
@@ -2074,51 +2178,46 @@ gtk_text_view_get_line_at_y (GtkTextView *text_view,
                                  line_top);
 }
 
-/**
- * gtk_text_view_scroll_to_iter:
- * @text_view: a #GtkTextView
- * @iter: a #GtkTextIter
- * @within_margin: margin as a [0.0,0.5) fraction of screen size
- * @use_align: whether to use alignment arguments (if %FALSE, 
- *    just get the mark onscreen)
- * @xalign: horizontal alignment of mark within visible area
- * @yalign: vertical alignment of mark within visible area
- *
- * Scrolls @text_view so that @iter is on the screen in the position
- * indicated by @xalign and @yalign. An alignment of 0.0 indicates
- * left or top, 1.0 indicates right or bottom, 0.5 means center. 
- * If @use_align is %FALSE, the text scrolls the minimal distance to 
- * get the mark onscreen, possibly not scrolling at all. The effective 
- * screen for purposes of this function is reduced by a margin of size 
- * @within_margin.
- *
- * Note that this function uses the currently-computed height of the
- * lines in the text buffer. Line heights are computed in an idle 
- * handler; so this function may not have the desired effect if it’s 
- * called before the height computations. To avoid oddness, consider 
- * using gtk_text_view_scroll_to_mark() which saves a point to be 
- * scrolled to after line validation.
- *
- * Returns: %TRUE if scrolling occurred
- **/
-gboolean
-gtk_text_view_scroll_to_iter (GtkTextView   *text_view,
-                              GtkTextIter   *iter,
-                              gdouble        within_margin,
-                              gboolean       use_align,
-                              gdouble        xalign,
-                              gdouble        yalign)
+/* Same as gtk_text_view_scroll_to_iter but deal with
+ * (top_margin / top_padding) and (bottom_margin / bottom_padding).
+ * When with_border == TRUE and you scroll on the edges,
+ * all borders are shown for the corresponding edge.
+ * When with_border == FALSE, only left margin and right_margin
+ * can be seen because they can be can be overwritten by tags.
+ */
+static gboolean
+_gtk_text_view_scroll_to_iter (GtkTextView   *text_view,
+                               GtkTextIter   *iter,
+                               gdouble        within_margin,
+                               gboolean       use_align,
+                               gdouble        xalign,
+                               gdouble        yalign,
+                               gboolean       with_border)
 {
-  GdkRectangle rect;
-  GdkRectangle screen;
-  gint screen_bottom;
-  gint screen_right;
-  gint scroll_dest;
+  GtkTextViewPrivate *priv = text_view->priv;
   GtkWidget *widget;
+
+  GdkRectangle cursor;
+  gint cursor_bottom;
+  gint cursor_right;
+
+  GdkRectangle screen;
+  GdkRectangle screen_dest;
+
+  gint screen_inner_left;
+  gint screen_inner_right;
+  gint screen_inner_top;
+  gint screen_inner_bottom;
+
+  gint border_xoffset = 0;
+  gint border_yoffset = 0;
+  gint within_margin_xoffset;
+  gint within_margin_yoffset;
+
+  gint buffer_bottom;
+  gint buffer_right;
+
   gboolean retval = FALSE;
-  gint scroll_inc;
-  gint screen_xoffset, screen_yoffset;
-  gint current_x_scroll, current_y_scroll;
 
   /* FIXME why don't we do the validate-at-scroll-destination thing
    * from flush_scroll in this function? I think it wasn't done before
@@ -2135,128 +2234,208 @@ gtk_text_view_scroll_to_iter (GtkTextView   *text_view,
 
   DV(g_print(G_STRLOC"\n"));
   
-  gtk_text_layout_get_iter_location (text_view->priv->layout,
+  gtk_text_layout_get_iter_location (priv->layout,
                                      iter,
-                                     &rect);
+                                     &cursor);
 
-  DV (g_print (" target rect %d,%d  %d x %d\n", rect.x, rect.y, rect.width, rect.height));
-  
-  current_x_scroll = text_view->priv->xoffset;
-  current_y_scroll = text_view->priv->yoffset;
+  DV (g_print (" target cursor %d,%d  %d x %d\n", cursor.x, cursor.y, cursor.width, cursor.height));
 
-  screen.x = current_x_scroll;
-  screen.y = current_y_scroll;
+  /* In each direction, *_border are the addition of *_padding and *_margin
+   *
+   * Vadjustment value:
+   * (-priv->top_border) [top padding][top margin] (0) [text][bottom margin][bottom padding]
+   *
+   * Hadjustment value:
+   * (-priv->left_padding) [left padding] (0) [left margin][text][right margin][right padding]
+   *
+   * Buffer coordinates:
+   * on x: (0) [left margin][text][right margin]
+   * on y: (0) [text]
+   *
+   * left margin and right margin are part of the x buffer coordinate
+   * because they are part of the pango layout so that they can be
+   * overwritten by tags.
+   *
+   * Canvas coordinates:
+   * (the canvas is the virtual window where the content of the buffer is drawn )
+   *
+   * on x: (-priv->left_padding) [left padding] (0) [left margin][text][right margin][right padding]
+   * on y: (-priv->top_border) [top margin][top padding] (0) [text][bottom margin][bottom padding]
+   *
+   * (priv->xoffset, priv->yoffset) is the origin of the view (visible part of the canvas)
+   *  in canvas coordinates.
+   * As you can see, canvas coordinates and buffer coordinates are compatible but the canvas
+   * can be larger than the buffer depending of the border size.
+   */
+
+  cursor_bottom = cursor.y + cursor.height;
+  cursor_right = cursor.x + cursor.width;
+
+  /* Current position of the view in canvas coordinates */
+  screen.x = priv->xoffset;
+  screen.y = priv->yoffset;
   screen.width = SCREEN_WIDTH (widget);
   screen.height = SCREEN_HEIGHT (widget);
-  
-  screen_xoffset = screen.width * within_margin;
-  screen_yoffset = screen.height * within_margin;
-  
-  screen.x += screen_xoffset;
-  screen.y += screen_yoffset;
-  screen.width -= screen_xoffset * 2;
-  screen.height -= screen_yoffset * 2;
 
-  /* paranoia check */
-  if (screen.width < 1)
-    screen.width = 1;
-  if (screen.height < 1)
-    screen.height = 1;
-  
-  /* The -1 here ensures that we leave enough space to draw the cursor
-   * when this function is used for horizontal scrolling. 
-   */
-  screen_right = screen.x + screen.width - 1;
-  screen_bottom = screen.y + screen.height;
-  
+  within_margin_xoffset = screen.width * within_margin;
+  within_margin_yoffset = screen.height * within_margin;
+
+  screen_inner_left = screen.x + within_margin_xoffset;
+  screen_inner_top = screen.y + within_margin_yoffset;
+  screen_inner_right = screen.x + screen.width - within_margin_xoffset;
+  screen_inner_bottom = screen.y + screen.height - within_margin_yoffset;
+
+  buffer_bottom = priv->height - priv->bottom_border;
+  buffer_right = priv->width - priv->right_margin - priv->left_padding - 1;
+
+  screen_dest.x = screen.x;
+  screen_dest.y = screen.y;
+  screen_dest.width = screen.width - within_margin_xoffset * 2;
+  screen_dest.height = screen.height - within_margin_yoffset * 2;
+
+  /* Minimum authorised size check */
+  if (screen_dest.width < 1)
+    screen_dest.width = 1;
+  if (screen_dest.height < 1)
+    screen_dest.height = 1;
+
   /* The alignment affects the point in the target character that we
    * choose to align. If we're doing right/bottom alignment, we align
    * the right/bottom edge of the character the mark is at; if we're
    * doing left/top we align the left/top edge of the character; if
    * we're doing center alignment we align the center of the
    * character.
+   *
+   * The differents cases handle on each direction:
+   *   1. cursor outside of the inner area define by within_margin
+   *   2. if use_align == TRUE, alignment with xalign and yalign
+   *   3. scrolling on the edges dependent of with_border
    */
-  
-  /* Vertical scroll */
 
-  scroll_inc = 0;
-  scroll_dest = current_y_scroll;
-  
+  /* Vertical scroll */
   if (use_align)
-    {      
-      scroll_dest = rect.y + (rect.height * yalign) - (screen.height * yalign);
-      
-      /* if scroll_dest < screen.y, we move a negative increment (up),
-       * else a positive increment (down)
-       */
-      scroll_inc = scroll_dest - screen.y + screen_yoffset;
+    {
+      gint cursor_y_alignment_offset;
+
+      cursor_y_alignment_offset = (cursor.height * yalign) - (screen_dest.height * yalign);
+      screen_dest.y = cursor.y + cursor_y_alignment_offset - within_margin_yoffset;
     }
   else
     {
-      /* move minimum to get onscreen */
-      if (rect.y < screen.y)
+      /* move minimum to get onscreen, showing the
+       * top_border or bottom_border when necessary
+       */
+      if (cursor.y < screen_inner_top)
         {
-          scroll_dest = rect.y;
-          scroll_inc = scroll_dest - screen.y - screen_yoffset;
-        }
-      else if ((rect.y + rect.height) > screen_bottom)
-        {
-          scroll_dest = rect.y + rect.height;
-          scroll_inc = scroll_dest - screen_bottom + screen_yoffset;
-        }
-    }  
-  
-  if (scroll_inc != 0)
-    {
-      gtk_adjustment_animate_to_value (text_view->priv->vadjustment,
-				       current_y_scroll + scroll_inc);
+          if (cursor.y == 0)
+            border_yoffset = (with_border) ? priv->top_padding : 0;
 
-      DV (g_print (" vert increment %d\n", scroll_inc));
+          screen_dest.y = cursor.y - MAX (within_margin_yoffset, border_yoffset);
+        }
+      else if (cursor_bottom > screen_inner_bottom)
+        {
+          if (cursor_bottom == buffer_bottom - priv->top_border)
+            border_yoffset = (with_border) ? priv->bottom_padding : 0;
+
+          screen_dest.y = cursor_bottom - screen_dest.height +
+                          MAX (within_margin_yoffset, border_yoffset);
+        }
+    }
+
+  if (screen_dest.y != screen.y)
+    {
+      gtk_adjustment_animate_to_value (priv->vadjustment, screen_dest.y  + priv->top_border);
+
+      DV (g_print (" vert increment %d\n", screen_dest.y - screen.y));
     }
 
   /* Horizontal scroll */
-  
-  scroll_inc = 0;
-  scroll_dest = current_x_scroll;
-  
-  if (use_align)
-    {      
-      scroll_dest = rect.x + (rect.width * xalign) - (screen.width * xalign);
 
-      /* if scroll_dest < screen.y, we move a negative increment (left),
-       * else a positive increment (right)
-       */
-      scroll_inc = scroll_dest - screen.x + screen_xoffset;
+  if (use_align)
+    {
+      gint cursor_x_alignment_offset;
+
+      cursor_x_alignment_offset = (cursor.width * xalign) - (screen_dest.width * xalign);
+      screen_dest.x = cursor.x + cursor_x_alignment_offset - within_margin_xoffset;
     }
   else
     {
-      /* move minimum to get onscreen */
-      if (rect.x < screen.x)
+      /* move minimum to get onscreen, showing the
+       * left_border or right_border when necessary
+       */
+      if (cursor.x < screen_inner_left)
         {
-          scroll_dest = rect.x;
-          scroll_inc = scroll_dest - screen.x - screen_xoffset;
-        }
-      else if ((rect.x + rect.width) > screen_right)
-        {
-          scroll_dest = rect.x + rect.width;
-          scroll_inc = scroll_dest - screen_right + screen_xoffset;
-        }
-    }
-  
-  if (scroll_inc != 0)
-    {
-      gtk_adjustment_animate_to_value (text_view->priv->hadjustment,
-				       current_x_scroll + scroll_inc);
+          if (cursor.x == priv->left_margin)
+            border_xoffset = (with_border) ? priv->left_padding : 0;
 
-      DV (g_print (" horiz increment %d\n", scroll_inc));
+          screen_dest.x = cursor.x - MAX (within_margin_xoffset, border_xoffset);
+        }
+      else if (cursor_right >= screen_inner_right - 1)
+        {
+          if (cursor.x >= buffer_right - priv->right_padding)
+            border_xoffset = (with_border) ? priv->right_padding : 0;
+
+          screen_dest.x = cursor_right - screen_dest.width +
+                          MAX (within_margin_xoffset, border_xoffset) + 1;
+        }
     }
-  
-  retval = (current_y_scroll != gtk_adjustment_get_value (text_view->priv->vadjustment))
-           || (current_x_scroll != gtk_adjustment_get_value (text_view->priv->hadjustment));
+
+  if (screen_dest.x != screen.x)
+    {
+      gtk_adjustment_animate_to_value (priv->hadjustment, screen_dest.x + priv->left_padding);
+
+      DV (g_print (" horiz increment %d\n", screen_dest.x - screen.x));
+    }
+
+  retval = (screen.y != screen_dest.y) || (screen.x != screen_dest.x);
 
   DV(g_print (">%s ("G_STRLOC")\n", retval ? "Actually scrolled" : "Didn't end up scrolling"));
   
   return retval;
+}
+
+/**
+ * gtk_text_view_scroll_to_iter:
+ * @text_view: a #GtkTextView
+ * @iter: a #GtkTextIter
+ * @within_margin: margin as a [0.0,0.5) fraction of screen size
+ * @use_align: whether to use alignment arguments (if %FALSE,
+ *    just get the mark onscreen)
+ * @xalign: horizontal alignment of mark within visible area
+ * @yalign: vertical alignment of mark within visible area
+ *
+ * Scrolls @text_view so that @iter is on the screen in the position
+ * indicated by @xalign and @yalign. An alignment of 0.0 indicates
+ * left or top, 1.0 indicates right or bottom, 0.5 means center.
+ * If @use_align is %FALSE, the text scrolls the minimal distance to
+ * get the mark onscreen, possibly not scrolling at all. The effective
+ * screen for purposes of this function is reduced by a margin of size
+ * @within_margin.
+ *
+ * Note that this function uses the currently-computed height of the
+ * lines in the text buffer. Line heights are computed in an idle
+ * handler; so this function may not have the desired effect if it’s
+ * called before the height computations. To avoid oddness, consider
+ * using gtk_text_view_scroll_to_mark() which saves a point to be
+ * scrolled to after line validation.
+ *
+ * Returns: %TRUE if scrolling occurred
+ **/
+gboolean
+gtk_text_view_scroll_to_iter (GtkTextView   *text_view,
+                              GtkTextIter   *iter,
+                              gdouble        within_margin,
+                              gboolean       use_align,
+                              gdouble        xalign,
+                              gdouble        yalign)
+{
+  return _gtk_text_view_scroll_to_iter (text_view,
+                                        iter,
+                                        within_margin,
+                                        use_align,
+                                        xalign,
+                                        yalign,
+                                        FALSE);
 }
 
 static void
@@ -2357,12 +2536,17 @@ gtk_text_view_flush_scroll (GtkTextView *text_view)
   /* Ensure we have updated width/height */
   gtk_text_view_update_adjustments (text_view);
   
-  retval = gtk_text_view_scroll_to_iter (text_view,
-                                         &iter,
-                                         scroll->within_margin,
-                                         scroll->use_align,
-                                         scroll->xalign,
-                                         scroll->yalign);
+  retval = _gtk_text_view_scroll_to_iter (text_view,
+                                          &iter,
+                                          scroll->within_margin,
+                                          scroll->use_align,
+                                          scroll->xalign,
+                                          scroll->yalign,
+                                          TRUE);
+
+  if (text_view->priv->text_handle)
+    gtk_text_view_update_handles (text_view,
+                                  _gtk_text_handle_get_mode (text_view->priv->text_handle));
 
   free_pending_scroll (scroll);
 
@@ -2384,6 +2568,7 @@ gtk_text_view_update_adjustments (GtkTextView *text_view)
 
   /* Make room for the cursor after the last character in the widest line */
   width += SPACE_FOR_CURSOR;
+  height += priv->top_border + priv->bottom_border;
 
   if (priv->width != width || priv->height != height)
     {
@@ -2934,23 +3119,25 @@ gtk_text_view_get_justification (GtkTextView *text_view)
  * gtk_text_view_set_left_margin:
  * @text_view: a #GtkTextView
  * @left_margin: left margin in pixels
- * 
+ *
  * Sets the default left margin for text in @text_view.
  * Tags in the buffer may override the default.
- **/
+ *
+ * Note that this function is confusingly named.
+ * In CSS terms, the value set here is padding.
+ */
 void
 gtk_text_view_set_left_margin (GtkTextView *text_view,
                                gint         left_margin)
 {
-  GtkTextViewPrivate *priv;
+  GtkTextViewPrivate *priv = text_view->priv;
 
   g_return_if_fail (GTK_IS_TEXT_VIEW (text_view));
-
-  priv = text_view->priv;
 
   if (priv->left_margin != left_margin)
     {
       priv->left_margin = left_margin;
+      priv->left_border = left_margin + priv->left_padding;
 
       if (priv->layout && priv->layout->default_style)
         {
@@ -2965,12 +3152,12 @@ gtk_text_view_set_left_margin (GtkTextView *text_view,
 /**
  * gtk_text_view_get_left_margin:
  * @text_view: a #GtkTextView
- * 
+ *
  * Gets the default left margin size of paragraphs in the @text_view.
  * Tags in the buffer may override the default.
- * 
+ *
  * Returns: left margin in pixels
- **/
+ */
 gint
 gtk_text_view_get_left_margin (GtkTextView *text_view)
 {
@@ -2986,7 +3173,10 @@ gtk_text_view_get_left_margin (GtkTextView *text_view)
  *
  * Sets the default right margin for text in the text view.
  * Tags in the buffer may override the default.
- **/
+ *
+ * Note that this function is confusingly named.
+ * In CSS terms, the value set here is padding.
+ */
 void
 gtk_text_view_set_right_margin (GtkTextView *text_view,
                                 gint         right_margin)
@@ -2998,6 +3188,7 @@ gtk_text_view_set_right_margin (GtkTextView *text_view,
   if (priv->right_margin != right_margin)
     {
       priv->right_margin = right_margin;
+      priv->right_border = right_margin + priv->right_padding;
 
       if (priv->layout && priv->layout->default_style)
         {
@@ -3012,18 +3203,122 @@ gtk_text_view_set_right_margin (GtkTextView *text_view,
 /**
  * gtk_text_view_get_right_margin:
  * @text_view: a #GtkTextView
- * 
+ *
  * Gets the default right margin for text in @text_view. Tags
  * in the buffer may override the default.
- * 
+ *
  * Returns: right margin in pixels
- **/
+ */
 gint
 gtk_text_view_get_right_margin (GtkTextView *text_view)
 {
   g_return_val_if_fail (GTK_IS_TEXT_VIEW (text_view), 0);
 
   return text_view->priv->right_margin;
+}
+
+/**
+ * gtk_text_view_set_top_margin:
+ * @text_view: a #GtkTextView
+ * @top_margin: top margin in pixels
+ *
+ * Sets the top margin for text in @text_view.
+ *
+ * Note that this function is confusingly named.
+ * In CSS terms, the value set here is padding.
+ *
+ * Since: 3.18
+ */
+void
+gtk_text_view_set_top_margin (GtkTextView *text_view,
+                              gint         top_margin)
+{
+  GtkTextViewPrivate *priv = text_view->priv;
+
+  g_return_if_fail (GTK_IS_TEXT_VIEW (text_view));
+
+  if (priv->top_margin != top_margin)
+    {
+      priv->yoffset += priv->top_margin - top_margin;
+
+      priv->top_margin = top_margin;
+      priv->top_border = top_margin + priv->top_padding;
+
+      if (priv->layout && priv->layout->default_style)
+        gtk_text_layout_default_style_changed (priv->layout);
+
+      gtk_text_view_invalidate (text_view);
+
+      g_object_notify (G_OBJECT (text_view), "top-margin");
+    }
+}
+
+/**
+ * gtk_text_view_get_top_margin:
+ * @text_view: a #GtkTextView
+ *
+ * Gets the top margin for text in the @text_view.
+ *
+ * Returns: top margin in pixels
+ *
+ * Since: 3.18
+ **/
+gint
+gtk_text_view_get_top_margin (GtkTextView *text_view)
+{
+  g_return_val_if_fail (GTK_IS_TEXT_VIEW (text_view), 0);
+
+  return text_view->priv->top_margin;
+}
+
+/**
+ * gtk_text_view_set_bottom_margin:
+ * @text_view: a #GtkTextView
+ * @bottom_margin: bottom margin in pixels
+ *
+ * Sets the bottom margin for text in @text_view.
+ *
+ * Note that this function is confusingly named.
+ * In CSS terms, the value set here is padding.
+ *
+ * Since: 3.18
+ */
+void
+gtk_text_view_set_bottom_margin (GtkTextView *text_view,
+                                 gint         bottom_margin)
+{
+  GtkTextViewPrivate *priv = text_view->priv;
+
+  g_return_if_fail (GTK_IS_TEXT_VIEW (text_view));
+
+  if (priv->bottom_margin != bottom_margin)
+    {
+      priv->bottom_margin = bottom_margin;
+      priv->bottom_border = bottom_margin + priv->bottom_padding;
+
+      if (priv->layout && priv->layout->default_style)
+        gtk_text_layout_default_style_changed (priv->layout);
+
+      g_object_notify (G_OBJECT (text_view), "bottom-margin");
+    }
+}
+
+/**
+ * gtk_text_view_get_bottom_margin:
+ * @text_view: a #GtkTextView
+ *
+ * Gets the bottom margin for text in the @text_view.
+ *
+ * Returns: bottom margin in pixels
+ *
+ * Since: 3.18
+ */
+gint
+gtk_text_view_get_bottom_margin (GtkTextView *text_view)
+{
+  g_return_val_if_fail (GTK_IS_TEXT_VIEW (text_view), 0);
+
+  return text_view->priv->bottom_margin;
 }
 
 /**
@@ -3380,6 +3675,14 @@ gtk_text_view_set_property (GObject         *object,
       gtk_text_view_set_right_margin (text_view, g_value_get_int (value));
       break;
 
+    case PROP_TOP_MARGIN:
+      gtk_text_view_set_top_margin (text_view, g_value_get_int (value));
+      break;
+
+    case PROP_BOTTOM_MARGIN:
+      gtk_text_view_set_bottom_margin (text_view, g_value_get_int (value));
+      break;
+
     case PROP_INDENT:
       gtk_text_view_set_indent (text_view, g_value_get_int (value));
       break;
@@ -3506,6 +3809,14 @@ gtk_text_view_get_property (GObject         *object,
 
     case PROP_RIGHT_MARGIN:
       g_value_set_int (value, priv->right_margin);
+      break;
+
+    case PROP_TOP_MARGIN:
+      g_value_set_int (value, priv->top_margin);
+      break;
+
+    case PROP_BOTTOM_MARGIN:
+      g_value_set_int (value, priv->bottom_margin);
       break;
 
     case PROP_INDENT:
@@ -3843,7 +4154,7 @@ gtk_text_view_size_allocate (GtkWidget *widget,
   DV(g_print(G_STRLOC"\n"));
 
   _gtk_pixel_cache_set_extra_size (priv->pixel_cache, 64,
-                                   allocation->height / 2);
+                                   allocation->height / 2 + priv->top_border);
 
   gtk_widget_get_allocation (widget, &widget_allocation);
   size_changed =
@@ -4225,7 +4536,7 @@ changed_handler (GtkTextLayout     *layout,
 
       gtk_text_layout_get_line_yrange (layout, &first, &new_first_para_top, NULL);
 
-      old_first_para_top = priv->yoffset - priv->first_para_pixels;
+      old_first_para_top = priv->yoffset - priv->first_para_pixels + priv->top_border;
 
       if (new_first_para_top != old_first_para_top)
         {
@@ -4272,7 +4583,6 @@ gtk_text_view_realize (GtkWidget *widget)
   GtkAllocation allocation;
   GtkTextView *text_view;
   GtkTextViewPrivate *priv;
-  GtkStyleContext *context;
   GdkWindow *window;
   GdkWindowAttr attributes;
   gint attributes_mask;
@@ -4292,7 +4602,7 @@ gtk_text_view_realize (GtkWidget *widget)
   attributes.height = allocation.height;
   attributes.wclass = GDK_INPUT_OUTPUT;
   attributes.visual = gtk_widget_get_visual (widget);
-  attributes.event_mask = GDK_VISIBILITY_NOTIFY_MASK | GDK_EXPOSURE_MASK;
+  attributes.event_mask = GDK_VISIBILITY_NOTIFY_MASK;
 
   attributes_mask = GDK_WA_X | GDK_WA_Y | GDK_WA_VISUAL;
 
@@ -4300,9 +4610,6 @@ gtk_text_view_realize (GtkWidget *widget)
                            &attributes, attributes_mask);
   gtk_widget_set_window (widget, window);
   gtk_widget_register_window (widget, window);
-
-  context = gtk_widget_get_style_context (widget);
-  gtk_style_context_set_background (context, window);
 
   text_window_realize (priv->text_window, widget);
 
@@ -4412,68 +4719,73 @@ gtk_text_view_unmap (GtkWidget *widget)
 }
 
 static void
-text_window_set_background (GtkStyleContext *context,
-                            GtkTextWindow   *window,
-                            const gchar     *class)
+text_window_set_padding (GtkTextView     *text_view,
+                         GtkStyleContext *style_context)
 {
-  gtk_style_context_save (context);
-  gtk_style_context_add_class (context, class);
-  gtk_style_context_set_background (context, window->bin_window);
-  gtk_style_context_restore (context);
-}
-
-static void
-gtk_text_view_set_background (GtkTextView *text_view)
-{
-  GtkStyleContext *context;
-  GtkWidget *widget;
   GtkTextViewPrivate *priv;
+  GtkStateFlags state;
+  GtkBorder padding;
 
-  widget = GTK_WIDGET (text_view);
   priv = text_view->priv;
 
-  context = gtk_widget_get_style_context (widget);
+  gtk_style_context_save (style_context);
+  gtk_style_context_add_class (style_context, GTK_STYLE_CLASS_VIEW);
 
-  gtk_style_context_set_background (context, gtk_widget_get_window (widget));
+  state = gtk_widget_get_state_flags (GTK_WIDGET (text_view));
+  gtk_style_context_get_padding (style_context, state, &padding);
 
-  text_window_set_background (context, priv->text_window, GTK_STYLE_CLASS_VIEW);
+  gtk_style_context_restore (style_context);
 
-  if (priv->left_window)
-    text_window_set_background (context, priv->left_window, GTK_STYLE_CLASS_LEFT);
+  if (padding.left != priv->left_padding ||
+      padding.right != priv->right_padding ||
+      padding.top != priv->top_padding ||
+      padding.bottom != priv->bottom_padding)
+    {
+      priv->xoffset += priv->left_padding - padding.left;
+      priv->yoffset += priv->top_padding - padding.top;
 
-  if (priv->right_window)
-    text_window_set_background (context, priv->right_window, GTK_STYLE_CLASS_RIGHT);
+      priv->left_padding = padding.left;
+      priv->right_padding = padding.right;
+      priv->top_padding = padding.top;
+      priv->bottom_padding = padding.bottom;
 
-  if (priv->top_window)
-    text_window_set_background (context, priv->top_window, GTK_STYLE_CLASS_TOP);
+      priv->top_border = padding.top + priv->top_margin;
+      priv->bottom_border = padding.bottom + priv->bottom_margin;
+      priv->left_border = padding.left + priv->left_margin;
+      priv->right_border = padding.right + priv->right_margin;
 
-  if (priv->bottom_window)
-    text_window_set_background (context, priv->bottom_window, GTK_STYLE_CLASS_BOTTOM);
+      if (priv->layout && priv->layout->default_style)
+        {
+          priv->layout->right_padding = priv->right_padding;
+          priv->layout->left_padding = priv->left_padding;
+
+          gtk_text_layout_default_style_changed (priv->layout);
+        }
+    }
 }
 
 static void
 gtk_text_view_style_updated (GtkWidget *widget)
 {
+  static GtkBitmask *affects_font = NULL;
   GtkTextView *text_view;
   GtkTextViewPrivate *priv;
   PangoContext *ltr_context, *rtl_context;
   GtkStyleContext *style_context;
   const GtkBitmask *changes;
 
+  if (G_UNLIKELY (affects_font == NULL))
+    affects_font = _gtk_css_style_property_get_mask_affecting (GTK_CSS_AFFECTS_FONT);
+
   text_view = GTK_TEXT_VIEW (widget);
   priv = text_view->priv;
 
   GTK_WIDGET_CLASS (gtk_text_view_parent_class)->style_updated (widget);
 
-  if (gtk_widget_get_realized (widget))
-    {
-      gtk_text_view_set_background (text_view);
-    }
-
-
   style_context = gtk_widget_get_style_context (widget);
   changes = _gtk_style_context_get_changes (style_context);
-  if ((changes == NULL || _gtk_css_style_property_changes_affect_font (changes)) &&
+
+  if ((changes == NULL || _gtk_bitmask_intersects (changes, affects_font)) &&
       priv->layout && priv->layout->default_style)
     {
       gtk_text_view_set_attributes_from_style (text_view,
@@ -4514,10 +4826,8 @@ gtk_text_view_state_flags_changed (GtkWidget     *widget,
 
   if (gtk_widget_get_realized (widget))
     {
-      gtk_text_view_set_background (text_view);
-
       if (gtk_widget_is_sensitive (widget))
-        cursor = gdk_cursor_new_for_display (gtk_widget_get_display (widget), GDK_XTERM);
+        cursor = gdk_cursor_new_from_name (gtk_widget_get_display (widget), "text");
       else
         cursor = NULL;
 
@@ -4545,11 +4855,11 @@ set_invisible_cursor (GdkWindow *window)
   GdkCursor *cursor;
 
   display = gdk_window_get_display (window);
-  cursor = gdk_cursor_new_for_display (display, GDK_BLANK_CURSOR);
+  cursor = gdk_cursor_new_from_name (display, "none");
  
   gdk_window_set_cursor (window, cursor);
   
-  g_object_unref (cursor);
+  g_clear_object (&cursor);
 }
 
 static void
@@ -4568,10 +4878,11 @@ gtk_text_view_unobscure_mouse_cursor (GtkTextView *text_view)
 {
   if (text_view->priv->mouse_cursor_obscured)
     {
+      GdkDisplay *display;
       GdkCursor *cursor;
-      
-      cursor = gdk_cursor_new_for_display (gtk_widget_get_display (GTK_WIDGET (text_view)),
-					   GDK_XTERM);
+
+      display = gtk_widget_get_display (GTK_WIDGET (text_view));
+      cursor = gdk_cursor_new_from_name (display, "text");
       gdk_window_set_cursor (text_view->priv->text_window->bin_window, cursor);
       g_object_unref (cursor);
       text_view->priv->mouse_cursor_obscured = FALSE;
@@ -4709,6 +5020,9 @@ gtk_text_view_set_handle_position (GtkTextView           *text_view,
     }
   else
     {
+      GtkTextDirection dir = GTK_TEXT_DIR_LTR;
+      GtkTextAttributes attributes = { 0 };
+
       _gtk_text_handle_set_visible (priv->text_handle, pos, TRUE);
 
       rect.x = CLAMP (x, 0, SCREEN_WIDTH (text_view));
@@ -4716,6 +5030,11 @@ gtk_text_view_set_handle_position (GtkTextView           *text_view,
       _text_window_to_widget_coords (text_view, &rect.x, &rect.y);
 
       _gtk_text_handle_set_position (priv->text_handle, pos, &rect);
+
+      if (gtk_text_iter_get_attributes (iter, &attributes))
+        dir = attributes.direction;
+
+      _gtk_text_handle_set_direction (priv->text_handle, pos, dir);
     }
 }
 
@@ -4839,11 +5158,17 @@ gtk_text_view_handle_dragged (GtkTextHandle         *handle,
         gtk_text_buffer_select_range (buffer, &cursor, &bound);
 
       if (_gtk_text_handle_get_is_dragged (priv->text_handle, cursor_pos))
-        gtk_text_view_scroll_mark_onscreen (text_view,
-                                            gtk_text_buffer_get_insert (buffer));
+        {
+          text_view->priv->cursor_handle_dragged = TRUE;
+          gtk_text_view_scroll_mark_onscreen (text_view,
+                                              gtk_text_buffer_get_insert (buffer));
+        }
       else
-        gtk_text_view_scroll_mark_onscreen (text_view,
-                                            gtk_text_buffer_get_selection_bound (buffer));
+        {
+          text_view->priv->selection_handle_dragged = TRUE;
+          gtk_text_view_scroll_mark_onscreen (text_view,
+                                              gtk_text_buffer_get_selection_bound (buffer));
+        }
     }
 
   if (_gtk_text_handle_get_is_dragged (priv->text_handle, cursor_pos))
@@ -4853,18 +5178,46 @@ gtk_text_view_handle_dragged (GtkTextHandle         *handle,
 }
 
 static void
+gtk_text_view_handle_drag_started (GtkTextHandle         *handle,
+                                   GtkTextHandlePosition  pos,
+                                   GtkTextView           *text_view)
+{
+  text_view->priv->cursor_handle_dragged = FALSE;
+  text_view->priv->selection_handle_dragged = FALSE;
+}
+
+static void
 gtk_text_view_handle_drag_finished (GtkTextHandle         *handle,
                                     GtkTextHandlePosition  pos,
                                     GtkTextView           *text_view)
 {
-  if (text_view->priv->selection_bubble &&
-      gtk_widget_get_visible (text_view->priv->selection_bubble))
-    gtk_text_view_selection_bubble_popup_unset (text_view);
-  else
-    gtk_text_view_selection_bubble_popup_set (text_view);
+  GtkTextViewPrivate *priv = text_view->priv;
 
-  if (text_view->priv->magnifier_popover)
-    gtk_widget_hide (text_view->priv->magnifier_popover);
+  if (!priv->cursor_handle_dragged && !priv->selection_handle_dragged)
+    {
+      GtkTextBuffer *buffer;
+      GtkTextIter cursor, start, end;
+      GtkSettings *settings;
+      guint double_click_time;
+
+      settings = gtk_widget_get_settings (GTK_WIDGET (text_view));
+      g_object_get (settings, "gtk-double-click-time", &double_click_time, NULL);
+      if (g_get_monotonic_time() - priv->handle_place_time < double_click_time * 1000)
+        {
+          buffer = get_buffer (text_view);
+          gtk_text_buffer_get_iter_at_mark (buffer, &cursor,
+                                            gtk_text_buffer_get_insert (buffer));
+          extend_selection (text_view, SELECT_WORDS, &cursor, &start, &end);
+          gtk_text_buffer_select_range (buffer, &start, &end);
+
+          gtk_text_view_update_handles (text_view, GTK_TEXT_HANDLE_MODE_SELECTION);
+        }
+      else
+        gtk_text_view_selection_bubble_popup_set (text_view);
+    }
+
+  if (priv->magnifier_popover)
+    gtk_widget_hide (priv->magnifier_popover);
 }
 
 static void
@@ -4973,14 +5326,14 @@ gtk_text_view_key_press_event (GtkWidget *widget, GdkEventKey *event)
   GtkTextIter iter;
   gboolean can_insert;
   gboolean retval = FALSE;
-  gboolean obscure = FALSE;
 
   text_view = GTK_TEXT_VIEW (widget);
   priv = text_view->priv;
-  
-  if (priv->layout == NULL ||
-      get_buffer (text_view) == NULL)
+
+  if (priv->layout == NULL || get_buffer (text_view) == NULL)
     return FALSE;
+
+  priv->handling_key_event = TRUE;
 
   /* Make sure input method knows where it is */
   flush_update_im_spot_location (text_view);
@@ -4993,7 +5346,6 @@ gtk_text_view_key_press_event (GtkWidget *widget, GdkEventKey *event)
       priv->need_im_reset = TRUE;
       if (!can_insert)
         gtk_text_view_reset_im_context (text_view);
-      obscure = can_insert;
       retval = TRUE;
     }
   /* Binding set */
@@ -5012,8 +5364,6 @@ gtk_text_view_key_press_event (GtkWidget *widget, GdkEventKey *event)
        */
       gtk_text_view_reset_im_context (text_view);
       gtk_text_view_commit_text (text_view, "\n");
-
-      obscure = TRUE;
       retval = TRUE;
     }
   /* Pass through Tab as literal tab, unless Control is held down */
@@ -5029,7 +5379,6 @@ gtk_text_view_key_press_event (GtkWidget *widget, GdkEventKey *event)
 	{
 	  gtk_text_view_reset_im_context (text_view);
 	  gtk_text_view_commit_text (text_view, "\t");
-	  obscure = TRUE;
 	}
       else
 	g_signal_emit_by_name (text_view, "move-focus",
@@ -5041,9 +5390,6 @@ gtk_text_view_key_press_event (GtkWidget *widget, GdkEventKey *event)
   else
     retval = FALSE;
 
-  if (obscure)
-    gtk_text_view_obscure_mouse_cursor (text_view);
-  
   gtk_text_view_reset_blink_time (text_view);
   gtk_text_view_pend_cursor_blink (text_view);
 
@@ -5052,6 +5398,8 @@ gtk_text_view_key_press_event (GtkWidget *widget, GdkEventKey *event)
                                GTK_TEXT_HANDLE_MODE_NONE);
 
   gtk_text_view_selection_bubble_popup_unset (text_view);
+
+  priv->handling_key_event = FALSE;
 
   return retval;
 }
@@ -5063,23 +5411,30 @@ gtk_text_view_key_release_event (GtkWidget *widget, GdkEventKey *event)
   GtkTextViewPrivate *priv;
   GtkTextMark *insert;
   GtkTextIter iter;
+  gboolean retval = FALSE;
 
   text_view = GTK_TEXT_VIEW (widget);
   priv = text_view->priv;
 
   if (priv->layout == NULL || get_buffer (text_view) == NULL)
     return FALSE;
-      
+
+  priv->handling_key_event = TRUE;
+
   insert = gtk_text_buffer_get_insert (get_buffer (text_view));
   gtk_text_buffer_get_iter_at_mark (get_buffer (text_view), &iter, insert);
   if (gtk_text_iter_can_insert (&iter, priv->editable) &&
       gtk_im_context_filter_keypress (priv->im_context, event))
     {
       priv->need_im_reset = TRUE;
-      return TRUE;
+      retval = TRUE;
     }
   else
-    return GTK_WIDGET_CLASS (gtk_text_view_parent_class)->key_release_event (widget, event);
+    retval = GTK_WIDGET_CLASS (gtk_text_view_parent_class)->key_release_event (widget, event);
+
+  priv->handling_key_event = FALSE;
+
+  return retval;
 }
 
 static gboolean
@@ -5156,8 +5511,7 @@ gtk_text_view_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
 #endif
 
   device = gdk_event_get_source_device ((GdkEvent *) event);
-  is_touchscreen = test_touchscreen ||
-                   (gtk_get_debug_flags () & GTK_DEBUG_TOUCHSCREEN) != 0 ||
+  is_touchscreen = gtk_simulate_touchscreen () ||
                    gdk_device_get_source (device) == GDK_SOURCE_TOUCHSCREEN;
 
   if (n_press == 1)
@@ -5205,7 +5559,9 @@ gtk_text_view_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
              */
             GtkTextIter start, end;
 
-            handle_mode = GTK_TEXT_HANDLE_MODE_CURSOR;
+            if (is_touchscreen)
+              handle_mode = GTK_TEXT_HANDLE_MODE_CURSOR;
+
             get_iter_from_gesture (text_view, priv->multipress_gesture,
                                    &iter, NULL, NULL);
 
@@ -5217,11 +5573,15 @@ gtk_text_view_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
                   {
                     if (!priv->selection_bubble ||
 			!gtk_widget_get_visible (priv->selection_bubble))
-                      gtk_text_view_selection_bubble_popup_set (text_view);
+                      {
+                        gtk_text_view_selection_bubble_popup_set (text_view);
+                        handle_mode = GTK_TEXT_HANDLE_MODE_NONE;
+                      }
                     else
-                      gtk_text_view_selection_bubble_popup_unset (text_view);
-
-                    handle_mode = GTK_TEXT_HANDLE_MODE_SELECTION;
+                      {
+                        gtk_text_view_selection_bubble_popup_unset (text_view);
+                        handle_mode = GTK_TEXT_HANDLE_MODE_SELECTION;
+                      }
                   }
                 else
                   {
@@ -5238,7 +5598,10 @@ gtk_text_view_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
                 gtk_text_view_selection_bubble_popup_unset (text_view);
 
 		if (is_touchscreen)
-		  gtk_text_buffer_place_cursor (get_buffer (text_view), &iter);
+                  {
+		    gtk_text_buffer_place_cursor (get_buffer (text_view), &iter);
+                    priv->handle_place_time = g_get_monotonic_time ();
+                  }
 		else
 		  gtk_text_view_start_selection_drag (text_view, &iter,
 						      SELECT_CHARACTERS, extends);
@@ -5248,9 +5611,10 @@ gtk_text_view_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
         case 2:
         case 3:
           if (is_touchscreen)
-            break;
-
-          handle_mode = GTK_TEXT_HANDLE_MODE_SELECTION;
+            {
+              handle_mode = GTK_TEXT_HANDLE_MODE_SELECTION;
+              break;
+            }
           gtk_text_view_end_selection_drag (text_view);
 
           get_iter_from_gesture (text_view, priv->multipress_gesture,
@@ -5263,11 +5627,8 @@ gtk_text_view_multipress_gesture_pressed (GtkGestureMultiPress *gesture,
           break;
         }
 
-      if (is_touchscreen)
-        {
-          _gtk_text_view_ensure_text_handles (text_view);
-          gtk_text_view_update_handles (text_view, handle_mode);
-        }
+      _gtk_text_view_ensure_text_handles (text_view);
+      gtk_text_view_update_handles (text_view, handle_mode);
     }
 
   if (n_press >= 3)
@@ -5376,8 +5737,8 @@ gtk_text_view_paint (GtkWidget      *widget,
   priv = text_view->priv;
 
   g_return_if_fail (priv->layout != NULL);
-  g_return_if_fail (priv->xoffset >= 0);
-  g_return_if_fail (priv->yoffset >= 0);
+  g_return_if_fail (priv->xoffset >= - priv->left_padding);
+  g_return_if_fail (priv->yoffset >= - priv->top_border);
 
   while (priv->first_validate_idle != 0)
     {
@@ -5487,6 +5848,8 @@ gtk_text_view_draw (GtkWidget *widget,
   GtkStyleContext *context;
 
   context = gtk_widget_get_style_context (widget);
+
+  text_window_set_padding (GTK_TEXT_VIEW (widget), context);
 
   if (gtk_cairo_should_draw_window (cr, gtk_widget_get_window (widget)))
     {
@@ -5683,8 +6046,10 @@ cursor_blinks (GtkTextView *text_view)
 #ifdef DEBUG_VALIDATION_AND_SCROLLING
   return FALSE;
 #endif
-  if (gtk_get_debug_flags () & GTK_DEBUG_UPDATES)
+#ifdef G_ENABLE_DEBUG
+  if (GTK_DEBUG_CHECK (UPDATES))
     return FALSE;
+#endif
 
   g_object_get (settings, "gtk-cursor-blink", &blink, NULL);
 
@@ -5987,7 +6352,7 @@ gtk_text_view_move_cursor (GtkTextView     *text_view,
       gtk_text_view_move_viewport (text_view, scroll_step, count);
       if ((old_xpos == gtk_adjustment_get_target_value (priv->hadjustment) &&
            old_ypos == gtk_adjustment_get_target_value (priv->vadjustment)) &&
-          leave_direction != -1 &&
+          leave_direction != (GtkDirectionType)-1 &&
           !gtk_widget_keynav_failed (GTK_WIDGET (text_view),
                                      leave_direction))
         {
@@ -6160,7 +6525,7 @@ gtk_text_view_move_cursor (GtkTextView     *text_view,
       if (step == GTK_MOVEMENT_DISPLAY_LINES)
         gtk_text_view_set_virtual_cursor_pos (text_view, cursor_x_pos, -1);
     }
-  else if (leave_direction != -1)
+  else if (leave_direction != (GtkDirectionType)-1)
     {
       if (!gtk_widget_keynav_failed (GTK_WIDGET (text_view),
                                      leave_direction))
@@ -6699,6 +7064,9 @@ gtk_text_view_buffer_changed_handler (GtkTextBuffer *buffer,
   GtkTextView *text_view = data;
   GtkTextViewPrivate *priv = text_view->priv;
 
+  if (priv->handling_key_event)
+    gtk_text_view_obscure_mouse_cursor (text_view);
+
   if (priv->text_handle)
     gtk_text_view_update_handles (text_view,
                                   _gtk_text_handle_get_mode (priv->text_handle));
@@ -6832,33 +7200,6 @@ gtk_text_view_unselect (GtkTextView *text_view)
 }
 
 static void
-get_iter_at_pointer (GtkTextView *text_view,
-                     GdkDevice   *device,
-                     GtkTextIter *iter,
-		     gint        *x,
-		     gint        *y)
-{
-  GtkTextViewPrivate *priv;
-  gint xcoord, ycoord;
-  GdkModifierType state;
-
-  priv = text_view->priv;
-
-  gdk_window_get_device_position (priv->text_window->bin_window,
-                                  device, &xcoord, &ycoord, &state);
-
-  gtk_text_layout_get_iter_at_pixel (priv->layout,
-                                     iter,
-                                     xcoord + priv->xoffset,
-                                     ycoord + priv->yoffset);
-  if (x)
-    *x = xcoord;
-
-  if (y)
-    *y = ycoord;
-}
-
-static void
 move_mark_to_pointer_and_scroll (GtkTextView    *text_view,
                                  const gchar    *mark_name)
 {
@@ -6918,20 +7259,22 @@ drag_scan_timeout (gpointer data)
   GtkTextView *text_view;
   GtkTextViewPrivate *priv;
   GtkTextIter newplace;
-  gint x, y;
   gdouble pointer_xoffset, pointer_yoffset;
 
   text_view = GTK_TEXT_VIEW (data);
   priv = text_view->priv;
 
-  get_iter_at_pointer (text_view, priv->dnd_device, &newplace, &x, &y);
+  gtk_text_layout_get_iter_at_pixel (priv->layout,
+                                     &newplace,
+                                     priv->dnd_x + priv->xoffset,
+                                     priv->dnd_y + priv->yoffset);
 
   gtk_text_buffer_move_mark (get_buffer (text_view),
                              priv->dnd_mark,
                              &newplace);
 
-  pointer_xoffset = (gdouble) x / gdk_window_get_width (priv->text_window->bin_window);
-  pointer_yoffset = (gdouble) y / gdk_window_get_height (priv->text_window->bin_window);
+  pointer_xoffset = (gdouble) priv->dnd_x / gdk_window_get_width (priv->text_window->bin_window);
+  pointer_yoffset = (gdouble) priv->dnd_y / gdk_window_get_height (priv->text_window->bin_window);
 
   if (check_scroll (pointer_xoffset, priv->hadjustment) ||
       check_scroll (pointer_yoffset, priv->vadjustment))
@@ -7145,8 +7488,7 @@ gtk_text_view_drag_gesture_update (GtkGestureDrag *gesture,
 
   device = gdk_event_get_source_device (event);
 
-  is_touchscreen = test_touchscreen ||
-                   (gtk_get_debug_flags () & GTK_DEBUG_TOUCHSCREEN) != 0 ||
+  is_touchscreen = gtk_simulate_touchscreen () ||
                    gdk_device_get_source (device) == GDK_SOURCE_TOUCHSCREEN;
 
   get_iter_from_gesture (text_view, text_view->priv->drag_gesture,
@@ -7277,20 +7619,12 @@ gtk_text_view_drag_gesture_end (GtkGestureDrag *gesture,
 
   /* Check whether the drag was cancelled rather than finished */
   if (!gtk_gesture_handles_sequence (GTK_GESTURE (gesture), sequence))
-    {
-      gtk_text_view_selection_bubble_popup_unset (text_view);
-      return;
-    }
+    return;
 
   event = gtk_gesture_get_last_event (GTK_GESTURE (gesture), sequence);
   device = gdk_event_get_source_device (event);
-  is_touchscreen = test_touchscreen ||
-    (gtk_get_debug_flags () & GTK_DEBUG_TOUCHSCREEN) != 0 ||
+  is_touchscreen = gtk_simulate_touchscreen () ||
     gdk_device_get_source (device) == GDK_SOURCE_TOUCHSCREEN;
-
-  if (!clicked_in_selection && is_touchscreen &&
-      (!priv->selection_bubble || !gtk_widget_get_visible (priv->selection_bubble)))
-    gtk_text_view_selection_bubble_popup_set (text_view);
 
   if (!is_touchscreen && clicked_in_selection &&
       !gtk_drag_check_threshold (GTK_WIDGET (text_view), start_x, start_y, x, y))
@@ -7551,8 +7885,12 @@ gtk_text_view_ensure_layout (GtkTextView *text_view)
       style->pixels_above_lines = priv->pixels_above_lines;
       style->pixels_below_lines = priv->pixels_below_lines;
       style->pixels_inside_wrap = priv->pixels_inside_wrap;
+
       style->left_margin = priv->left_margin;
       style->right_margin = priv->right_margin;
+      priv->layout->right_padding = priv->right_padding;
+      priv->layout->left_padding = priv->left_padding;
+
       style->indent = priv->indent;
       style->tabs = priv->tabs ? pango_tab_array_copy (priv->tabs) : NULL;
 
@@ -7777,6 +8115,10 @@ static void
 gtk_text_view_drag_end (GtkWidget        *widget,
                         GdkDragContext   *context)
 {
+  GtkTextView *text_view;
+
+  text_view = GTK_TEXT_VIEW (widget);
+  text_view->priv->dnd_x = text_view->priv->dnd_y = -1;
 }
 
 static void
@@ -7863,8 +8205,7 @@ gtk_text_view_drag_leave (GtkWidget        *widget,
 
   gtk_text_mark_set_visible (priv->dnd_mark, FALSE);
 
-  if (priv->dnd_device)
-    priv->dnd_device = NULL;
+  priv->dnd_x = priv->dnd_y = -1;
 
   if (priv->scroll_timeout != 0)
     g_source_remove (priv->scroll_timeout);
@@ -7961,7 +8302,8 @@ gtk_text_view_drag_motion (GtkWidget        *widget,
       gtk_text_mark_set_visible (priv->dnd_mark, FALSE);
     }
 
-  priv->dnd_device = gdk_drag_context_get_device (context);
+  priv->dnd_x = x;
+  priv->dnd_y = y;
 
   if (!priv->scroll_timeout)
   {
@@ -8383,7 +8725,7 @@ gtk_text_view_value_changed (GtkAdjustment *adjustment,
   if (adjustment == priv->hadjustment)
     {
       dx = priv->xoffset - (gint)gtk_adjustment_get_value (adjustment);
-      priv->xoffset = gtk_adjustment_get_value (adjustment);
+      priv->xoffset = (gint)gtk_adjustment_get_value (adjustment) - priv->left_padding;
 
       /* If the change is due to a size change we need 
        * to invalidate the entire text window because there might be
@@ -8399,8 +8741,8 @@ gtk_text_view_value_changed (GtkAdjustment *adjustment,
     }
   else if (adjustment == priv->vadjustment)
     {
-      dy = priv->yoffset - (gint)gtk_adjustment_get_value (adjustment);
-      priv->yoffset = gtk_adjustment_get_value (adjustment);
+      dy = priv->yoffset - (gint)gtk_adjustment_get_value (adjustment) + priv->top_border ;
+      priv->yoffset -= dy;
 
       if (priv->layout)
         {
@@ -8499,6 +8841,20 @@ gtk_text_view_value_changed (GtkAdjustment *adjustment,
     {
       g_source_remove (priv->first_validate_idle);
       priv->first_validate_idle = 0;
+    }
+
+  /* Allow to extend selection with mouse scrollwheel. Bug 710612 */
+  if (gtk_gesture_is_active (priv->drag_gesture))
+    {
+      GdkEvent *current_event;
+      current_event = gtk_get_current_event ();
+      if (current_event != NULL)
+        {
+          if (current_event->type == GDK_SCROLL)
+            move_mark_to_pointer_and_scroll (text_view, "insert");
+
+          gdk_event_free (current_event);
+        }
     }
 
   /* Finally we update the IM cursor location again, to ensure any
@@ -8768,7 +9124,7 @@ gtk_text_view_get_virtual_cursor_pos (GtkTextView *text_view,
 
   if (y)
     {
-      if (priv->virtual_cursor_x != -1)
+      if (priv->virtual_cursor_y != -1)
         *y = priv->virtual_cursor_y;
       else
         *y = pos.y + pos.height / 2;
@@ -9135,28 +9491,61 @@ gtk_text_view_get_selection_rect (GtkTextView           *text_view,
 }
 
 static void
+show_or_hide_handles (GtkWidget   *popover,
+                      GParamSpec  *pspec,
+                      GtkTextView *text_view)
+{
+  gboolean visible;
+  GtkTextHandle *handle;
+  GtkTextHandleMode mode;
+
+  visible = gtk_widget_get_visible (popover);
+
+  handle = text_view->priv->text_handle;
+  mode = _gtk_text_handle_get_mode (handle);
+
+  if (!visible)
+    gtk_text_view_update_handles (text_view, mode);
+  else
+    {
+      _gtk_text_handle_set_visible (handle, GTK_TEXT_HANDLE_POSITION_SELECTION_START, FALSE);
+      _gtk_text_handle_set_visible (handle, GTK_TEXT_HANDLE_POSITION_SELECTION_END, FALSE);
+    }
+}
+
+static void
 activate_bubble_cb (GtkWidget   *item,
                     GtkTextView *text_view)
 {
-  const gchar *signal = g_object_get_data (G_OBJECT (item), "gtk-signal");
-  g_signal_emit_by_name (text_view, signal);
+  const gchar *signal;
+
+  signal = g_object_get_data (G_OBJECT (item), "gtk-signal");
   gtk_widget_hide (text_view->priv->selection_bubble);
+  g_signal_emit_by_name (text_view, signal);
 }
 
 static void
 append_bubble_action (GtkTextView  *text_view,
                       GtkWidget    *toolbar,
                       const gchar  *label,
+                      const gchar  *icon_name,
                       const gchar  *signal,
                       gboolean      sensitive)
 {
-  GtkToolItem *item = gtk_tool_button_new (NULL, label);
-  gtk_tool_button_set_use_underline (GTK_TOOL_BUTTON (item), TRUE);
+  GtkWidget *item, *image;
+
+  item = gtk_button_new ();
+  gtk_button_set_focus_on_click (GTK_BUTTON (item), FALSE);
+  image = gtk_image_new_from_icon_name (icon_name, GTK_ICON_SIZE_MENU);
+  gtk_widget_show (image);
+  gtk_container_add (GTK_CONTAINER (item), image);
+  gtk_widget_set_tooltip_text (item, label);
+  gtk_style_context_add_class (gtk_widget_get_style_context (item), "image-button");
   g_object_set_data (G_OBJECT (item), I_("gtk-signal"), (char *)signal);
   g_signal_connect (item, "clicked", G_CALLBACK (activate_bubble_cb), text_view);
   gtk_widget_set_sensitive (GTK_WIDGET (item), sensitive);
   gtk_widget_show (GTK_WIDGET (item));
-  gtk_toolbar_insert (GTK_TOOLBAR (toolbar), item, -1);
+  gtk_container_add (GTK_CONTAINER (toolbar), item);
 }
 
 static void
@@ -9170,12 +9559,20 @@ bubble_targets_received (GtkClipboard     *clipboard,
   gboolean has_selection;
   gboolean has_clipboard;
   gboolean can_insert;
+  gboolean all_selected;
   GtkTextIter iter;
   GtkTextIter sel_start, sel_end;
+  GtkTextIter start, end;
+  GtkWidget *box;
   GtkWidget *toolbar;
 
   has_selection = gtk_text_buffer_get_selection_bounds (get_buffer (text_view),
                                                         &sel_start, &sel_end);
+  gtk_text_buffer_get_bounds (get_buffer (text_view), &start, &end);
+
+  all_selected = gtk_text_iter_equal (&start, &sel_start) &&
+                 gtk_text_iter_equal (&end, &sel_end);
+
   if (!priv->editable && !has_selection)
     {
       priv->selection_bubble_timeout_id = 0;
@@ -9188,32 +9585,38 @@ bubble_targets_received (GtkClipboard     *clipboard,
   priv->selection_bubble = gtk_popover_new (GTK_WIDGET (text_view));
   gtk_style_context_add_class (gtk_widget_get_style_context (priv->selection_bubble),
                                GTK_STYLE_CLASS_TOUCH_SELECTION);
-  gtk_popover_set_position (GTK_POPOVER (priv->selection_bubble),
-                            GTK_POS_TOP);
+  gtk_popover_set_position (GTK_POPOVER (priv->selection_bubble), GTK_POS_BOTTOM);
   gtk_popover_set_modal (GTK_POPOVER (priv->selection_bubble), FALSE);
+  g_signal_connect (priv->selection_bubble, "notify::visible",
+                    G_CALLBACK (show_or_hide_handles), text_view);
 
-  toolbar = GTK_WIDGET (gtk_toolbar_new ());
-  gtk_toolbar_set_style (GTK_TOOLBAR (toolbar), GTK_TOOLBAR_TEXT);
-  gtk_toolbar_set_show_arrow (GTK_TOOLBAR (toolbar), FALSE);
+  box = gtk_box_new (GTK_ORIENTATION_VERTICAL, 5);
+  g_object_set (box, "margin", 10, NULL);
+  gtk_widget_show (box);
+  toolbar = gtk_box_new (GTK_ORIENTATION_HORIZONTAL, 5);
   gtk_widget_show (toolbar);
-  gtk_container_add (GTK_CONTAINER (priv->selection_bubble), toolbar);
+  gtk_container_add (GTK_CONTAINER (priv->selection_bubble), box);
+  gtk_container_add (GTK_CONTAINER (box), toolbar);
 
   gtk_text_buffer_get_iter_at_mark (get_buffer (text_view), &iter,
                                     gtk_text_buffer_get_insert (get_buffer (text_view)));
   can_insert = gtk_text_iter_can_insert (&iter, priv->editable);
   has_clipboard = gtk_selection_data_targets_include_text (data);
 
-  append_bubble_action (text_view, toolbar, _("Cu_t"), "cut-clipboard",
-                        has_selection &&
-                        range_contains_editable_text (&sel_start, &sel_end,
-                                                      priv->editable));
-  append_bubble_action (text_view, toolbar, _("_Copy"), "copy-clipboard",
-                        has_selection);
-  append_bubble_action (text_view, toolbar, _("_Paste"), "paste-clipboard",
-                        can_insert && has_clipboard);
+  if (range_contains_editable_text (&sel_start, &sel_end, priv->editable) && has_selection)
+    append_bubble_action (text_view, toolbar, _("Select all"), "edit-select-all-symbolic", "select-all", !all_selected);
+
+  if (range_contains_editable_text (&sel_start, &sel_end, priv->editable) && has_selection)
+    append_bubble_action (text_view, toolbar, _("Cut"), "edit-cut-symbolic", "cut-clipboard", TRUE);
+
+  if (has_selection)
+    append_bubble_action (text_view, toolbar, _("Copy"), "edit-copy-symbolic", "copy-clipboard", TRUE);
+
+  if (can_insert)
+    append_bubble_action (text_view, toolbar, _("Paste"), "edit-paste-symbolic", "paste-clipboard", has_clipboard);
 
   if (priv->populate_all)
-    g_signal_emit (text_view, signals[POPULATE_POPUP], 0, toolbar);
+    g_signal_emit (text_view, signals[POPULATE_POPUP], 0, box);
 
   gtk_text_view_get_selection_rect (text_view, &rect);
   rect.x -= priv->xoffset;
@@ -9221,12 +9624,17 @@ bubble_targets_received (GtkClipboard     *clipboard,
 
   _text_window_to_widget_coords (text_view, &rect.x, &rect.y);
 
+  rect.x -= 5;
+  rect.y -= 5;
+  rect.width += 10;
+  rect.height += 10;
+
   gtk_popover_set_pointing_to (GTK_POPOVER (priv->selection_bubble), &rect);
   gtk_widget_show (priv->selection_bubble);
 }
 
 static gboolean
-gtk_text_view_selection_bubble_popup_cb (gpointer user_data)
+gtk_text_view_selection_bubble_popup_show (gpointer user_data)
 {
   GtkTextView *text_view = user_data;
   gtk_clipboard_request_contents (gtk_widget_get_clipboard (GTK_WIDGET (text_view),
@@ -9267,7 +9675,7 @@ gtk_text_view_selection_bubble_popup_set (GtkTextView *text_view)
     g_source_remove (priv->selection_bubble_timeout_id);
 
   priv->selection_bubble_timeout_id =
-    gdk_threads_add_timeout (1000, gtk_text_view_selection_bubble_popup_cb,
+    gdk_threads_add_timeout (50, gtk_text_view_selection_bubble_popup_show,
                              text_view);
   g_source_set_name_by_id (priv->selection_bubble_timeout_id, "[gtk+] gtk_text_view_selection_bubble_popup_cb");
 }
@@ -9322,7 +9730,7 @@ gtk_text_view_get_rendered_rect (GtkTextView  *text_view,
   window = gtk_text_view_get_window (text_view, GTK_TEXT_WINDOW_TEXT);
 
   rect->x = gtk_adjustment_get_value (priv->hadjustment) - extra_w;
-  rect->y = gtk_adjustment_get_value (priv->vadjustment) - extra_h;
+  rect->y = gtk_adjustment_get_value (priv->vadjustment) - extra_h - priv->top_border;
 
   rect->height = gdk_window_get_height (window) + (extra_h * 2);
   rect->width = gdk_window_get_width (window) + (extra_w * 2);
@@ -9351,20 +9759,23 @@ text_window_invalidate_handler (GdkWindow      *window,
 {
   gpointer widget;
   GtkTextView *text_view;
+  GtkTextViewPrivate *priv;
   int x, y;
 
   gdk_window_get_user_data (window, &widget);
   text_view = GTK_TEXT_VIEW (widget);
+  priv = text_view->priv;
 
   /* Scrolling will invalidate everything in the bin window,
    * but we already have it in the cache, so we can ignore that */
-  if (text_view->priv->in_scroll)
+  if (priv->in_scroll)
     return;
 
-  x = gtk_adjustment_get_value (text_view->priv->hadjustment);
-  y = gtk_adjustment_get_value (text_view->priv->vadjustment);
+  x = priv->xoffset;
+  y = priv->yoffset + priv->top_border;
+
   cairo_region_translate (region, x, y);
-  _gtk_pixel_cache_invalidate (text_view->priv->pixel_cache, region);
+  _gtk_pixel_cache_invalidate (priv->pixel_cache, region);
   cairo_region_translate (region, -x, -y);
 }
 
@@ -9372,10 +9783,10 @@ static void
 text_window_realize (GtkTextWindow *win,
                      GtkWidget     *widget)
 {
-  GtkStyleContext *context;
   GdkWindow *window;
   GdkWindowAttr attributes;
   gint attributes_mask;
+  GdkDisplay *display;
   GdkCursor *cursor;
 
   attributes.window_type = GDK_WINDOW_CHILD;
@@ -9402,15 +9813,13 @@ text_window_realize (GtkTextWindow *win,
   attributes.y = 0;
   attributes.width = win->allocation.width;
   attributes.height = win->allocation.height;
-  attributes.event_mask = (GDK_EXPOSURE_MASK            |
-                           GDK_SCROLL_MASK              |
-                           GDK_SMOOTH_SCROLL_MASK       |
-                           GDK_KEY_PRESS_MASK           |
-                           GDK_BUTTON_PRESS_MASK        |
-                           GDK_BUTTON_RELEASE_MASK      |
-                           GDK_POINTER_MOTION_MASK      |
-                           GDK_POINTER_MOTION_HINT_MASK |
-                           gtk_widget_get_events (win->widget));
+  attributes.event_mask = gtk_widget_get_events (win->widget)
+                          | GDK_SCROLL_MASK
+                          | GDK_SMOOTH_SCROLL_MASK
+                          | GDK_KEY_PRESS_MASK
+                          | GDK_BUTTON_PRESS_MASK
+                          | GDK_BUTTON_RELEASE_MASK
+                          | GDK_POINTER_MOTION_MASK;
 
   win->bin_window = gdk_window_new (win->window,
                                     &attributes,
@@ -9424,37 +9833,19 @@ text_window_realize (GtkTextWindow *win,
 
   gdk_window_show (win->bin_window);
 
-  context = gtk_widget_get_style_context (widget);
-
   switch (win->type)
     {
     case GTK_TEXT_WINDOW_TEXT:
       if (gtk_widget_is_sensitive (widget))
         {
-          /* I-beam cursor */
-          cursor = gdk_cursor_new_for_display (gdk_window_get_display (window),
-                                               GDK_XTERM);
+          display = gdk_window_get_display (window);
+          cursor = gdk_cursor_new_from_name (display, "text");
           gdk_window_set_cursor (win->bin_window, cursor);
-          g_object_unref (cursor);
-        } 
+          g_clear_object (&cursor);
+        }
 
       gtk_im_context_set_client_window (GTK_TEXT_VIEW (widget)->priv->im_context,
                                         win->window);
-
-      text_window_set_background (context, win, GTK_STYLE_CLASS_VIEW);
-      break;
-
-    case GTK_TEXT_WINDOW_LEFT:
-      text_window_set_background (context, win, GTK_STYLE_CLASS_LEFT);
-      break;
-    case GTK_TEXT_WINDOW_RIGHT:
-      text_window_set_background (context, win, GTK_STYLE_CLASS_RIGHT);
-      break;
-    case GTK_TEXT_WINDOW_TOP:
-      text_window_set_background (context, win, GTK_STYLE_CLASS_TOP);
-      break;
-    case GTK_TEXT_WINDOW_BOTTOM:
-      text_window_set_background (context, win, GTK_STYLE_CLASS_BOTTOM);
       break;
     default:
       break;

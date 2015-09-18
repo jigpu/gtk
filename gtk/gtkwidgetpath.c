@@ -17,12 +17,15 @@
 
 #include "config.h"
 
+#include "gtkwidgetpath.h"
+
 #include <string.h>
 
-#include "gtkwidget.h"
-#include "gtkwidgetpath.h"
+#include "gtkcssnodedeclarationprivate.h"
+#include "gtkprivate.h"
 #include "gtkstylecontextprivate.h"
 #include "gtktypebuiltins.h"
+#include "gtkwidget.h"
 
 /**
  * SECTION:gtkwidgetpath
@@ -87,18 +90,14 @@ typedef struct GtkPathElement GtkPathElement;
 
 struct GtkPathElement
 {
-  GType type;
-  GQuark name;
-  GtkStateFlags state;
+  GtkCssNodeDeclaration *decl;
   guint sibling_index;
-  GHashTable *regions;
-  GArray *classes;
   GtkWidgetPath *siblings;
 };
 
 struct _GtkWidgetPath
 {
-  volatile guint ref_count;
+  guint ref_count;
 
   GArray *elems; /* First element contains the described widget */
 };
@@ -130,30 +129,10 @@ gtk_path_element_copy (GtkPathElement       *dest,
 {
   memset (dest, 0, sizeof (GtkPathElement));
 
-  dest->type = src->type;
-  dest->name = src->name;
-  dest->state = src->state;
+  dest->decl = gtk_css_node_declaration_ref (src->decl);
   if (src->siblings)
     dest->siblings = gtk_widget_path_ref (src->siblings);
   dest->sibling_index = src->sibling_index;
-
-  if (src->regions)
-    {
-      GHashTableIter iter;
-      gpointer key, value;
-
-      g_hash_table_iter_init (&iter, src->regions);
-      dest->regions = g_hash_table_new (NULL, NULL);
-
-      while (g_hash_table_iter_next (&iter, &key, &value))
-        g_hash_table_insert (dest->regions, key, value);
-    }
-
-  if (src->classes)
-    {
-      dest->classes = g_array_new (FALSE, FALSE, sizeof (GQuark));
-      g_array_append_vals (dest->classes, src->classes->data, src->classes->len);
-    }
 }
 
 /**
@@ -172,7 +151,7 @@ gtk_widget_path_copy (const GtkWidgetPath *path)
   GtkWidgetPath *new_path;
   guint i;
 
-  g_return_val_if_fail (path != NULL, NULL);
+  gtk_internal_return_val_if_fail (path != NULL, NULL);
 
   new_path = gtk_widget_path_new ();
 
@@ -204,9 +183,9 @@ gtk_widget_path_copy (const GtkWidgetPath *path)
 GtkWidgetPath *
 gtk_widget_path_ref (GtkWidgetPath *path)
 {
-  g_return_val_if_fail (path != NULL, path);
+  gtk_internal_return_val_if_fail (path != NULL, path);
 
-  g_atomic_int_add (&path->ref_count, 1);
+  path->ref_count += 1;
 
   return path;
 }
@@ -225,9 +204,10 @@ gtk_widget_path_unref (GtkWidgetPath *path)
 {
   guint i;
 
-  g_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path != NULL);
 
-  if (!g_atomic_int_dec_and_test (&path->ref_count))
+  path->ref_count -= 1;
+  if (path->ref_count > 0)
     return;
 
   for (i = 0; i < path->elems->len; i++)
@@ -236,12 +216,7 @@ gtk_widget_path_unref (GtkWidgetPath *path)
 
       elem = &g_array_index (path->elems, GtkPathElement, i);
 
-      if (elem->regions)
-        g_hash_table_destroy (elem->regions);
-
-      if (elem->classes)
-        g_array_free (elem->classes, TRUE);
-
+      gtk_css_node_declaration_unref (elem->decl);
       if (elem->siblings)
         gtk_widget_path_unref (elem->siblings);
     }
@@ -262,7 +237,7 @@ gtk_widget_path_unref (GtkWidgetPath *path)
 void
 gtk_widget_path_free (GtkWidgetPath *path)
 {
-  g_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path != NULL);
 
   gtk_widget_path_unref (path);
 }
@@ -281,7 +256,7 @@ gtk_widget_path_free (GtkWidgetPath *path)
 gint
 gtk_widget_path_length (const GtkWidgetPath *path)
 {
-  g_return_val_if_fail (path != NULL, 0);
+  gtk_internal_return_val_if_fail (path != NULL, 0);
 
   return path->elems->len;
 }
@@ -305,42 +280,45 @@ char *
 gtk_widget_path_to_string (const GtkWidgetPath *path)
 {
   GString *string;
-  guint i, j;
+  guint i, j, n;
 
-  g_return_val_if_fail (path != NULL, NULL);
+  gtk_internal_return_val_if_fail (path != NULL, NULL);
 
   string = g_string_new ("");
 
   for (i = 0; i < path->elems->len; i++)
     {
       GtkPathElement *elem;
+      GtkStateFlags state;
+      const GQuark *classes;
+      GList *list, *regions;
 
       elem = &g_array_index (path->elems, GtkPathElement, i);
 
       if (i > 0)
         g_string_append_c (string, ' ');
 
-      g_string_append (string, g_type_name (elem->type));
+      g_string_append (string, g_type_name (gtk_css_node_declaration_get_type (elem->decl)));
 
-      if (elem->name)
+      if (gtk_css_node_declaration_get_id (elem->decl))
         {
           g_string_append_c (string, '(');
-          g_string_append (string, g_quark_to_string (elem->name));
+          g_string_append (string, gtk_css_node_declaration_get_id (elem->decl));
           g_string_append_c (string, ')');
         }
 
-      if (elem->state)
+      state = gtk_css_node_declaration_get_state (elem->decl);
+      if (state)
         {
           GFlagsClass *fclass;
-          gint i;
 
           fclass = g_type_class_ref (GTK_TYPE_STATE_FLAGS);
-          for (i = 0; i < fclass->n_values; i++)
+          for (j = 0; j < fclass->n_values; j++)
             {
-              if (elem->state & fclass->values[i].value)
+              if (state & fclass->values[j].value)
                 {
                   g_string_append_c (string, ':');
-                  g_string_append (string, fclass->values[i].value_nick);
+                  g_string_append (string, fclass->values[j].value_nick);
                 }
             }
           g_type_class_unref (fclass);
@@ -351,45 +329,40 @@ gtk_widget_path_to_string (const GtkWidgetPath *path)
                                 elem->sibling_index + 1,
                                 gtk_widget_path_length (elem->siblings));
 
-      if (elem->classes)
+      classes = gtk_css_node_declaration_get_classes (elem->decl, &n);
+      for (j = 0; j < n; j++)
         {
-          for (j = 0; j < elem->classes->len; j++)
-            {
-              g_string_append_c (string, '.');
-              g_string_append (string, g_quark_to_string (g_array_index (elem->classes, GQuark, j)));
-            }
+          g_string_append_c (string, '.');
+          g_string_append (string, g_quark_to_string (classes[j]));
         }
 
-      if (elem->regions)
+      regions = gtk_css_node_declaration_list_regions (elem->decl);
+      for (list = regions; list; list = list->next)
         {
-          GHashTableIter iter;
-          gpointer key, value;
+          static const char *flag_names[] = {
+            "even",
+            "odd",
+            "first",
+            "last",
+            "only",
+            "sorted"
+          };
+          GtkRegionFlags flags;
+          GQuark region = GPOINTER_TO_UINT (regions->data);
 
-          g_hash_table_iter_init (&iter, elem->regions);
-          while (g_hash_table_iter_next (&iter, &key, &value))
+          gtk_css_node_declaration_has_region (elem->decl, region, &flags);
+          g_string_append_c (string, ' ');
+          g_string_append (string, g_quark_to_string (region));
+          for (j = 0; j < G_N_ELEMENTS(flag_names); j++)
             {
-              GtkRegionFlags flags = GPOINTER_TO_UINT (value);
-              static const char *flag_names[] = {
-                "even",
-                "odd",
-                "first",
-                "last",
-                "only",
-                "sorted"
-              };
-
-              g_string_append_c (string, ' ');
-              g_string_append (string, g_quark_to_string (GPOINTER_TO_UINT (key)));
-              for (j = 0; j < G_N_ELEMENTS(flag_names); j++)
+              if (flags & (1 << j))
                 {
-                  if (flags & (1 << j))
-                    {
-                      g_string_append_c (string, ':');
-                      g_string_append (string, flag_names[j]);
-                    }
+                  g_string_append_c (string, ':');
+                  g_string_append (string, flag_names[j]);
                 }
             }
         }
+      g_list_free (regions);
     }
 
   return g_string_free (string, FALSE);
@@ -408,11 +381,13 @@ void
 gtk_widget_path_prepend_type (GtkWidgetPath *path,
                               GType          type)
 {
-  GtkPathElement new = { 0 };
+  GtkPathElement new = { NULL };
 
-  g_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path != NULL);
 
-  new.type = type;
+  new.decl = gtk_css_node_declaration_new ();
+  gtk_css_node_declaration_set_type (&new.decl, type);
+
   g_array_prepend_val (path->elems, new);
 }
 
@@ -431,11 +406,12 @@ gint
 gtk_widget_path_append_type (GtkWidgetPath *path,
                              GType          type)
 {
-  GtkPathElement new = { 0 };
+  GtkPathElement new = { NULL };
 
-  g_return_val_if_fail (path != NULL, 0);
+  gtk_internal_return_val_if_fail (path != NULL, 0);
 
-  new.type = type;
+  new.decl = gtk_css_node_declaration_new ();
+  gtk_css_node_declaration_set_type (&new.decl, type);
   g_array_append_val (path->elems, new);
 
   return path->elems->len - 1;
@@ -469,9 +445,9 @@ gtk_widget_path_append_with_siblings (GtkWidgetPath *path,
 {
   GtkPathElement new;
 
-  g_return_val_if_fail (path != NULL, 0);
-  g_return_val_if_fail (siblings != NULL, 0);
-  g_return_val_if_fail (sibling_index < gtk_widget_path_length (siblings), 0);
+  gtk_internal_return_val_if_fail (path != NULL, 0);
+  gtk_internal_return_val_if_fail (siblings != NULL, 0);
+  gtk_internal_return_val_if_fail (sibling_index < gtk_widget_path_length (siblings), 0);
 
   gtk_path_element_copy (&new, &g_array_index (siblings->elems, GtkPathElement, sibling_index));
   new.siblings = gtk_widget_path_ref (siblings);
@@ -497,8 +473,8 @@ gtk_widget_path_iter_get_siblings (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, G_TYPE_INVALID);
-  g_return_val_if_fail (path->elems->len != 0, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path != NULL, NULL);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
@@ -525,8 +501,8 @@ gtk_widget_path_iter_get_sibling_index (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, G_TYPE_INVALID);
-  g_return_val_if_fail (path->elems->len != 0, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path != NULL, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, G_TYPE_INVALID);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
@@ -553,14 +529,14 @@ gtk_widget_path_iter_get_object_type (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, G_TYPE_INVALID);
-  g_return_val_if_fail (path->elems->len != 0, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path != NULL, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, G_TYPE_INVALID);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
-  return elem->type;
+  return gtk_css_node_declaration_get_type (elem->decl);
 }
 
 /**
@@ -581,14 +557,14 @@ gtk_widget_path_iter_set_object_type (GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
-  elem->type = type;
+  gtk_css_node_declaration_set_type (&elem->decl, type);
 }
 
 /**
@@ -610,14 +586,14 @@ gtk_widget_path_iter_get_state (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, 0);
-  g_return_val_if_fail (path->elems->len != 0, 0);
+  gtk_internal_return_val_if_fail (path != NULL, 0);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, 0);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
-  return elem->state;
+  return gtk_css_node_declaration_get_state (elem->decl);
 }
 
 /**
@@ -654,15 +630,15 @@ gtk_widget_path_iter_set_state (GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  elem->state = state;
+  gtk_css_node_declaration_set_state (&elem->decl, state);
 }
 
 /**
@@ -682,14 +658,14 @@ gtk_widget_path_iter_get_name (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, NULL);
-  g_return_val_if_fail (path->elems->len != 0, NULL);
+  gtk_internal_return_val_if_fail (path != NULL, NULL);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
-  return g_quark_to_string (elem->name);
+  return gtk_css_node_declaration_get_id (elem->decl);
 }
 
 /**
@@ -710,16 +686,16 @@ gtk_widget_path_iter_set_name (GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
-  g_return_if_fail (name != NULL);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (name != NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  elem->name = g_quark_from_string (name);
+  gtk_css_node_declaration_set_id (&elem->decl, g_intern_string (name));
 }
 
 /**
@@ -740,18 +716,11 @@ gtk_widget_path_iter_has_qname (const GtkWidgetPath *path,
                                 gint                 pos,
                                 GQuark               qname)
 {
-  GtkPathElement *elem;
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, FALSE);
+  gtk_internal_return_val_if_fail (qname != 0, FALSE);
 
-  g_return_val_if_fail (path != NULL, FALSE);
-  g_return_val_if_fail (path->elems->len != 0, FALSE);
-  g_return_val_if_fail (qname != 0, FALSE);
-
-  if (pos < 0 || pos >= path->elems->len)
-    pos = path->elems->len - 1;
-
-  elem = &g_array_index (path->elems, GtkPathElement, pos);
-
-  return (elem->name == qname);
+  return gtk_widget_path_iter_has_name (path, pos, g_quark_to_string (qname));
 }
 
 /**
@@ -772,20 +741,18 @@ gtk_widget_path_iter_has_name (const GtkWidgetPath *path,
                                gint                 pos,
                                const gchar         *name)
 {
-  GQuark qname;
+  GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, FALSE);
-  g_return_val_if_fail (path->elems->len != 0, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, FALSE);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
-  qname = g_quark_try_string (name);
+  name = g_intern_string (name);
+  elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  if (qname == 0)
-    return FALSE;
-
-  return gtk_widget_path_iter_has_qname (path, pos, qname);
+  return gtk_css_node_declaration_get_id (elem->decl) == name;
 }
 
 /**
@@ -805,46 +772,26 @@ gtk_widget_path_iter_add_class (GtkWidgetPath *path,
                                 gint           pos,
                                 const gchar   *name)
 {
-  GtkPathElement *elem;
-  gboolean added = FALSE;
-  GQuark qname;
-  guint i;
-
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
-  g_return_if_fail (name != NULL);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (name != NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
+  gtk_widget_path_iter_add_qclass (path, pos, g_quark_from_string (name));
+}
+
+void
+gtk_widget_path_iter_add_qclass (GtkWidgetPath *path,
+                                 gint           pos,
+                                 GQuark         qname)
+{
+  GtkPathElement *elem;
+
   elem = &g_array_index (path->elems, GtkPathElement, pos);
-  qname = g_quark_from_string (name);
 
-  if (!elem->classes)
-    elem->classes = g_array_new (FALSE, FALSE, sizeof (GQuark));
-
-  for (i = 0; i < elem->classes->len; i++)
-    {
-      GQuark quark;
-
-      quark = g_array_index (elem->classes, GQuark, i);
-
-      if (qname == quark)
-        {
-          /* Already there */
-          added = TRUE;
-          break;
-        }
-      if (qname < quark)
-        {
-          g_array_insert_val (elem->classes, i, qname);
-          added = TRUE;
-          break;
-        }
-    }
-
-  if (!added)
-    g_array_append_val (elem->classes, qname);
+  gtk_css_node_declaration_add_class (&elem->decl, qname);
 }
 
 /**
@@ -865,39 +812,20 @@ gtk_widget_path_iter_remove_class (GtkWidgetPath *path,
 {
   GtkPathElement *elem;
   GQuark qname;
-  guint i;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
-  g_return_if_fail (name != NULL);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (name != NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
+  elem = &g_array_index (path->elems, GtkPathElement, pos);
   qname = g_quark_try_string (name);
-
   if (qname == 0)
     return;
 
-  elem = &g_array_index (path->elems, GtkPathElement, pos);
-
-  if (!elem->classes)
-    return;
-
-  for (i = 0; i < elem->classes->len; i++)
-    {
-      GQuark quark;
-
-      quark = g_array_index (elem->classes, GQuark, i);
-
-      if (quark > qname)
-        break;
-      else if (quark == qname)
-        {
-          g_array_remove_index (elem->classes, i);
-          break;
-        }
-    }
+  gtk_css_node_declaration_remove_class (&elem->decl, qname);
 }
 
 /**
@@ -916,19 +844,15 @@ gtk_widget_path_iter_clear_classes (GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  if (!elem->classes)
-    return;
-
-  if (elem->classes->len > 0)
-    g_array_remove_range (elem->classes, 0, elem->classes->len);
+  gtk_css_node_declaration_clear_classes (&elem->decl);
 }
 
 /**
@@ -952,25 +876,21 @@ gtk_widget_path_iter_list_classes (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
   GSList *list = NULL;
-  guint i;
+  const GQuark *classes;
+  guint i, n;
 
-  g_return_val_if_fail (path != NULL, NULL);
-  g_return_val_if_fail (path->elems->len != 0, NULL);
+  gtk_internal_return_val_if_fail (path != NULL, NULL);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
+  classes = gtk_css_node_declaration_get_classes (elem->decl, &n);
 
-  if (!elem->classes)
-    return NULL;
-
-  for (i = 0; i < elem->classes->len; i++)
+  for (i = 0; i < n; i++)
     {
-      GQuark quark;
-
-      quark = g_array_index (elem->classes, GQuark, i);
-      list = g_slist_prepend (list, (gchar *) g_quark_to_string (quark));
+      list = g_slist_prepend (list, (gchar *) g_quark_to_string (classes[i]));
     }
 
   return g_slist_reverse (list);
@@ -995,33 +915,17 @@ gtk_widget_path_iter_has_qclass (const GtkWidgetPath *path,
                                  GQuark               qname)
 {
   GtkPathElement *elem;
-  guint i;
 
-  g_return_val_if_fail (path != NULL, FALSE);
-  g_return_val_if_fail (path->elems->len != 0, FALSE);
-  g_return_val_if_fail (qname != 0, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, FALSE);
+  gtk_internal_return_val_if_fail (qname != 0, FALSE);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  if (!elem->classes)
-    return FALSE;
-
-  for (i = 0; i < elem->classes->len; i++)
-    {
-      GQuark quark;
-
-      quark = g_array_index (elem->classes, GQuark, i);
-
-      if (quark == qname)
-        return TRUE;
-      else if (quark > qname)
-        break;
-    }
-
-  return FALSE;
+  return gtk_css_node_declaration_has_class (elem->decl, qname);
 }
 
 /**
@@ -1044,9 +948,9 @@ gtk_widget_path_iter_has_class (const GtkWidgetPath *path,
 {
   GQuark qname;
 
-  g_return_val_if_fail (path != NULL, FALSE);
-  g_return_val_if_fail (path->elems->len != 0, FALSE);
-  g_return_val_if_fail (name != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, FALSE);
+  gtk_internal_return_val_if_fail (name != NULL, FALSE);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
@@ -1086,10 +990,10 @@ gtk_widget_path_iter_add_region (GtkWidgetPath  *path,
   GtkPathElement *elem;
   GQuark qname;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
-  g_return_if_fail (name != NULL);
-  g_return_if_fail (_gtk_style_context_check_region_name (name));
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (name != NULL);
+  gtk_internal_return_if_fail (_gtk_style_context_check_region_name (name));
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
@@ -1097,12 +1001,7 @@ gtk_widget_path_iter_add_region (GtkWidgetPath  *path,
   elem = &g_array_index (path->elems, GtkPathElement, pos);
   qname = g_quark_from_string (name);
 
-  if (!elem->regions)
-    elem->regions = g_hash_table_new (NULL, NULL);
-
-  g_hash_table_insert (elem->regions,
-                       GUINT_TO_POINTER (qname),
-                       GUINT_TO_POINTER (flags));
+  gtk_css_node_declaration_add_region (&elem->decl, qname, flags);
 }
 
 /**
@@ -1126,22 +1025,19 @@ gtk_widget_path_iter_remove_region (GtkWidgetPath *path,
   GtkPathElement *elem;
   GQuark qname;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
-  g_return_if_fail (name != NULL);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (name != NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
+  elem = &g_array_index (path->elems, GtkPathElement, pos);
   qname = g_quark_try_string (name);
-
   if (qname == 0)
     return;
 
-  elem = &g_array_index (path->elems, GtkPathElement, pos);
-
-  if (elem->regions)
-    g_hash_table_remove (elem->regions, GUINT_TO_POINTER (qname));
+  gtk_css_node_declaration_remove_region (&elem->decl, qname);
 }
 
 /**
@@ -1162,16 +1058,15 @@ gtk_widget_path_iter_clear_regions (GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_if_fail (path != NULL);
-  g_return_if_fail (path->elems->len != 0);
+  gtk_internal_return_if_fail (path != NULL);
+  gtk_internal_return_if_fail (path->elems->len != 0);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  if (elem->regions)
-    g_hash_table_remove_all (elem->regions);
+  gtk_css_node_declaration_clear_regions (&elem->decl);
 }
 
 /**
@@ -1196,30 +1091,23 @@ gtk_widget_path_iter_list_regions (const GtkWidgetPath *path,
                                    gint                 pos)
 {
   GtkPathElement *elem;
-  GHashTableIter iter;
   GSList *list = NULL;
-  gpointer key;
+  GList *l, *wrong_list;
 
-  g_return_val_if_fail (path != NULL, NULL);
-  g_return_val_if_fail (path->elems->len != 0, NULL);
+  gtk_internal_return_val_if_fail (path != NULL, NULL);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, NULL);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  if (!elem->regions)
-    return NULL;
-
-  g_hash_table_iter_init (&iter, elem->regions);
-
-  while (g_hash_table_iter_next (&iter, &key, NULL))
+  wrong_list = gtk_css_node_declaration_list_regions (elem->decl);
+  for (l = wrong_list; l; l = l->next)
     {
-      GQuark qname;
-
-      qname = GPOINTER_TO_UINT (key);
-      list = g_slist_prepend (list, (gchar *) g_quark_to_string (qname));
+      list = g_slist_prepend (list, (char *) g_quark_to_string (GPOINTER_TO_UINT (l->data)));
     }
+  g_list_free (wrong_list);
 
   return list;
 }
@@ -1247,29 +1135,17 @@ gtk_widget_path_iter_has_qregion (const GtkWidgetPath *path,
                                   GtkRegionFlags      *flags)
 {
   GtkPathElement *elem;
-  gpointer value;
 
-  g_return_val_if_fail (path != NULL, FALSE);
-  g_return_val_if_fail (path->elems->len != 0, FALSE);
-  g_return_val_if_fail (qname != 0, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, FALSE);
+  gtk_internal_return_val_if_fail (qname != 0, FALSE);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
 
   elem = &g_array_index (path->elems, GtkPathElement, pos);
 
-  if (!elem->regions)
-    return FALSE;
-
-  if (!g_hash_table_lookup_extended (elem->regions,
-                                     GUINT_TO_POINTER (qname),
-                                     NULL, &value))
-    return FALSE;
-
-  if (flags)
-    *flags = GPOINTER_TO_UINT (value);
-
-  return TRUE;
+  return gtk_css_node_declaration_has_region (elem->decl, qname, flags);
 }
 
 /**
@@ -1296,9 +1172,9 @@ gtk_widget_path_iter_has_region (const GtkWidgetPath *path,
 {
   GQuark qname;
 
-  g_return_val_if_fail (path != NULL, FALSE);
-  g_return_val_if_fail (path->elems->len != 0, FALSE);
-  g_return_val_if_fail (name != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path->elems->len != 0, FALSE);
+  gtk_internal_return_val_if_fail (name != NULL, FALSE);
 
   if (pos < 0 || pos >= path->elems->len)
     pos = path->elems->len - 1;
@@ -1329,11 +1205,11 @@ gtk_widget_path_get_object_type (const GtkWidgetPath *path)
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, G_TYPE_INVALID);
+  gtk_internal_return_val_if_fail (path != NULL, G_TYPE_INVALID);
 
   elem = &g_array_index (path->elems, GtkPathElement,
                          path->elems->len - 1);
-  return elem->type;
+  return gtk_css_node_declaration_get_type (elem->decl);
 }
 
 /**
@@ -1354,16 +1230,12 @@ gtk_widget_path_is_type (const GtkWidgetPath *path,
 {
   GtkPathElement *elem;
 
-  g_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
 
   elem = &g_array_index (path->elems, GtkPathElement,
                          path->elems->len - 1);
 
-  if (elem->type == type ||
-      g_type_is_a (elem->type, type))
-    return TRUE;
-
-  return FALSE;
+  return g_type_is_a (gtk_css_node_declaration_get_type (elem->decl), type);
 }
 
 /**
@@ -1384,7 +1256,7 @@ gtk_widget_path_has_parent (const GtkWidgetPath *path,
 {
   guint i;
 
-  g_return_val_if_fail (path != NULL, FALSE);
+  gtk_internal_return_val_if_fail (path != NULL, FALSE);
 
   for (i = 0; i < path->elems->len - 1; i++)
     {
@@ -1392,8 +1264,7 @@ gtk_widget_path_has_parent (const GtkWidgetPath *path,
 
       elem = &g_array_index (path->elems, GtkPathElement, i);
 
-      if (elem->type == type ||
-          g_type_is_a (elem->type, type))
+      if (g_type_is_a (gtk_css_node_declaration_get_type (elem->decl), type))
         return TRUE;
     }
 

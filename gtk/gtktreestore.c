@@ -23,6 +23,7 @@
 #include "gtktreedatalist.h"
 #include "gtktreednd.h"
 #include "gtkbuildable.h"
+#include "gtkbuilderprivate.h"
 #include "gtkdebug.h"
 #include "gtkintl.h"
 
@@ -34,7 +35,7 @@
  * @See_also: #GtkTreeModel
  *
  * The #GtkTreeStore object is a list model for use with a #GtkTreeView
- * widget.  It implements the #GtkTreeModel interface, and consequentialy,
+ * widget.  It implements the #GtkTreeModel interface, and consequentially,
  * can use all of the methods available there.  It also implements the
  * #GtkTreeSortable interface so it can be sorted by the view.  Finally,
  * it also implements the tree
@@ -191,16 +192,19 @@ static void     gtk_tree_store_move                    (GtkTreeStore           *
                                                         gboolean                before);
 
 
+#ifdef G_ENABLE_DEBUG
 static inline void
 validate_tree (GtkTreeStore *tree_store)
 {
-  if (gtk_get_debug_flags () & GTK_DEBUG_TREE)
+  if (GTK_DEBUG_CHECK (TREE))
     {
       g_assert (G_NODE (tree_store->priv->root)->parent == NULL);
-
       validate_gnode (G_NODE (tree_store->priv->root));
     }
 }
+#else
+#define validate_tree(store)
+#endif
 
 G_DEFINE_TYPE_WITH_CODE (GtkTreeStore, gtk_tree_store, G_TYPE_OBJECT,
                          G_ADD_PRIVATE (GtkTreeStore)
@@ -3339,28 +3343,56 @@ typedef struct {
 } GSListSubParserData;
 
 static void
-tree_model_start_element (GMarkupParseContext *context,
-			  const gchar         *element_name,
-			  const gchar        **names,
-			  const gchar        **values,
-			  gpointer            user_data,
-			  GError            **error)
+tree_model_start_element (GMarkupParseContext  *context,
+                          const gchar          *element_name,
+                          const gchar         **names,
+                          const gchar         **values,
+                          gpointer              user_data,
+                          GError              **error)
 {
-  guint i;
   GSListSubParserData *data = (GSListSubParserData*)user_data;
 
-  for (i = 0; names[i]; i++)
+  if (strcmp (element_name, "columns") == 0)
     {
-      if (strcmp (names[i], "type") == 0)
-	data->items = g_slist_prepend (data->items, g_strdup (values[i]));
+      if (!_gtk_builder_check_parent (data->builder, context, "object", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_INVALID, NULL, NULL,
+                                        G_MARKUP_COLLECT_INVALID))
+        _gtk_builder_prefix_error (data->builder, context, error);
+
+    }
+  else if (strcmp (element_name, "column") == 0)
+    {
+      const gchar *type;
+
+      if (!_gtk_builder_check_parent (data->builder, context, "columns", error))
+        return;
+
+      if (!g_markup_collect_attributes (element_name, names, values, error,
+                                        G_MARKUP_COLLECT_STRING, "type", &type,
+                                        G_MARKUP_COLLECT_INVALID))
+        {
+          _gtk_builder_prefix_error (data->builder, context, error);
+          return;
+        }
+
+      data->items = g_slist_prepend (data->items, g_strdup (type));
+    }
+  else
+    {
+      _gtk_builder_error_unhandled_tag (data->builder, context,
+                                        "GtkTreeStore", element_name,
+                                        error);
     }
 }
 
 static void
-tree_model_end_element (GMarkupParseContext *context,
-			const gchar         *element_name,
-			gpointer             user_data,
-			GError             **error)
+tree_model_end_element (GMarkupParseContext  *context,
+                        const gchar          *element_name,
+                        gpointer              user_data,
+                        GError              **error)
 {
   GSListSubParserData *data = (GSListSubParserData*)user_data;
 
@@ -3407,26 +3439,27 @@ static const GMarkupParser tree_model_parser =
 
 static gboolean
 gtk_tree_store_buildable_custom_tag_start (GtkBuildable  *buildable,
-					   GtkBuilder    *builder,
-					   GObject       *child,
-					   const gchar   *tagname,
-					   GMarkupParser *parser,
-					   gpointer      *data)
+                                           GtkBuilder    *builder,
+                                           GObject       *child,
+                                           const gchar   *tagname,
+                                           GMarkupParser *parser,
+                                           gpointer      *parser_data)
 {
-  GSListSubParserData *parser_data;
+  GSListSubParserData *data;
 
   if (child)
     return FALSE;
 
   if (strcmp (tagname, "columns") == 0)
     {
-      parser_data = g_slice_new0 (GSListSubParserData);
-      parser_data->builder = builder;
-      parser_data->items = NULL;
-      parser_data->object = G_OBJECT (buildable);
+      data = g_slice_new0 (GSListSubParserData);
+      data->builder = builder;
+      data->items = NULL;
+      data->object = G_OBJECT (buildable);
 
       *parser = tree_model_parser;
-      *data = parser_data;
+      *parser_data = data;
+
       return TRUE;
     }
 
@@ -3435,10 +3468,10 @@ gtk_tree_store_buildable_custom_tag_start (GtkBuildable  *buildable,
 
 static void
 gtk_tree_store_buildable_custom_finished (GtkBuildable *buildable,
-					  GtkBuilder   *builder,
-					  GObject      *child,
-					  const gchar  *tagname,
-					  gpointer      user_data)
+                                          GtkBuilder   *builder,
+                                          GObject      *child,
+                                          const gchar  *tagname,
+                                          gpointer      user_data)
 {
   GSListSubParserData *data;
 

@@ -51,6 +51,7 @@ struct _GdkX11DeviceXI2
 
   gint device_id;
   GArray *scroll_valuators;
+  gdouble *last_axes;
 };
 
 struct _GdkX11DeviceXI2Class
@@ -157,6 +158,7 @@ gdk_x11_device_xi2_finalize (GObject *object)
   GdkX11DeviceXI2 *device = GDK_X11_DEVICE_XI2 (object);
 
   g_array_free (device->scroll_valuators, TRUE);
+  g_free (device->last_axes);
 
   G_OBJECT_CLASS (gdk_x11_device_xi2_parent_class)->finalize (object);
 }
@@ -497,9 +499,12 @@ gdk_x11_device_xi2_window_at_position (GdkDevice       *device,
   XIButtonState button_state = { 0 };
   XIModifierState mod_state;
   XIGroupState group_state;
+  Bool retval;
 
   display = gdk_device_get_display (device);
   screen = gdk_display_get_default_screen (display);
+
+  gdk_x11_display_error_trap_push (display);
 
   /* This function really only works if the mouse pointer is held still
    * during its operation. If it moves from one leaf window to another
@@ -532,7 +537,7 @@ gdk_x11_device_xi2_window_at_position (GdkDevice       *device,
     {
       gint width, height;
       GList *toplevels, *list;
-      Window pointer_window, root, child;
+      Window pointer_window;
 
       /* FIXME: untrusted clients case not multidevice-safe */
       pointer_window = None;
@@ -547,18 +552,18 @@ gdk_x11_device_xi2_window_at_position (GdkDevice       *device,
           /* Free previous button mask, if any */
           g_free (button_state.mask);
 
-          gdk_x11_display_error_trap_push (display);
-          XIQueryPointer (xdisplay,
-                          device_xi2->device_id,
-                          xwindow,
-                          &root, &child,
-                          &xroot_x, &xroot_y,
-                          &xwin_x, &xwin_y,
-                          &button_state,
-                          &mod_state,
-                          &group_state);
-          if (gdk_x11_display_error_trap_pop (display))
+          retval = XIQueryPointer (xdisplay,
+                                   device_xi2->device_id,
+                                   xwindow,
+                                   &root, &child,
+                                   &xroot_x, &xroot_y,
+                                   &xwin_x, &xwin_y,
+                                   &button_state,
+                                   &mod_state,
+                                   &group_state);
+          if (!retval)
             continue;
+
           if (child != None)
             {
               pointer_window = child;
@@ -607,17 +612,16 @@ gdk_x11_device_xi2_window_at_position (GdkDevice       *device,
       last = xwindow;
       free (button_state.mask);
 
-      gdk_x11_display_error_trap_push (display);
-      XIQueryPointer (xdisplay,
-                      device_xi2->device_id,
-                      xwindow,
-                      &root, &xwindow,
-                      &xroot_x, &xroot_y,
-                      &xwin_x, &xwin_y,
-                      &button_state,
-                      &mod_state,
-                      &group_state);
-      if (gdk_x11_display_error_trap_pop (display))
+      retval = XIQueryPointer (xdisplay,
+                               device_xi2->device_id,
+                               xwindow,
+                               &root, &xwindow,
+                               &xroot_x, &xroot_y,
+                               &xwin_x, &xwin_y,
+                               &button_state,
+                               &mod_state,
+                               &group_state);
+      if (!retval)
         break;
 
       if (get_toplevel && last != root &&
@@ -631,10 +635,25 @@ gdk_x11_device_xi2_window_at_position (GdkDevice       *device,
 
   gdk_x11_display_ungrab (display);
 
-  window = gdk_x11_window_lookup_for_display (display, last);
-  impl = NULL;
-  if (window)
-    impl = GDK_WINDOW_IMPL_X11 (window->impl);
+  if (gdk_x11_display_error_trap_pop (display) == 0)
+    {
+      window = gdk_x11_window_lookup_for_display (display, last);
+      impl = NULL;
+      if (window)
+        impl = GDK_WINDOW_IMPL_X11 (window->impl);
+
+      if (mask)
+        *mask = _gdk_x11_device_xi2_translate_state (&mod_state, &button_state, &group_state);
+
+      free (button_state.mask);
+    }
+  else
+    {
+      window = NULL;
+
+      if (mask)
+        *mask = 0;
+    }
 
   if (win_x)
     *win_x = (window) ? (xwin_x / impl->window_scale) : -1;
@@ -642,10 +661,6 @@ gdk_x11_device_xi2_window_at_position (GdkDevice       *device,
   if (win_y)
     *win_y = (window) ? (xwin_y / impl->window_scale) : -1;
 
-  if (mask)
-    *mask = _gdk_x11_device_xi2_translate_state (&mod_state, &button_state, &group_state);
-
-  free (button_state.mask);
 
   return window;
 }
@@ -760,10 +775,10 @@ _gdk_x11_device_xi2_translate_state (XIModifierState *mods_state,
     {
       gint len, i;
 
-      /* We're only interested in the first 5 buttons */
-      len = MIN (5, buttons_state->mask_len * 8);
+      /* We're only interested in the first 3 buttons */
+      len = MIN (3, buttons_state->mask_len * 8);
 
-      for (i = 0; i < len; i++)
+      for (i = 1; i <= len; i++)
         {
           if (!XIMaskIsSet (buttons_state->mask, i))
             continue;
@@ -778,12 +793,6 @@ _gdk_x11_device_xi2_translate_state (XIModifierState *mods_state,
               break;
             case 3:
               state |= GDK_BUTTON3_MASK;
-              break;
-            case 4:
-              state |= GDK_BUTTON4_MASK;
-              break;
-            case 5:
-              state |= GDK_BUTTON5_MASK;
               break;
             default:
               break;
@@ -890,4 +899,30 @@ _gdk_x11_device_xi2_get_id (GdkX11DeviceXI2 *device)
   g_return_val_if_fail (GDK_IS_X11_DEVICE_XI2 (device), 0);
 
   return device->device_id;
+}
+
+gdouble
+gdk_x11_device_xi2_get_last_axis_value (GdkX11DeviceXI2 *device,
+                                        gint             n_axis)
+{
+  if (n_axis >= gdk_device_get_n_axes (GDK_DEVICE (device)))
+    return 0;
+
+  if (!device->last_axes)
+    return 0;
+
+  return device->last_axes[n_axis];
+}
+
+void
+gdk_x11_device_xi2_store_axes (GdkX11DeviceXI2 *device,
+                               gdouble         *axes,
+                               gint             n_axes)
+{
+  g_free (device->last_axes);
+
+  if (axes && n_axes)
+    device->last_axes = g_memdup (axes, sizeof (gdouble) * n_axes);
+  else
+    device->last_axes = NULL;
 }

@@ -31,6 +31,7 @@
 #include "gtksizerequest.h"
 #include "gtkwindow.h"
 #include "gtkintl.h"
+#include "gtkmarshalers.h"
 
 typedef struct _GtkFileChooserEntryClass GtkFileChooserEntryClass;
 
@@ -59,6 +60,7 @@ struct _GtkFileChooserEntry
   guint current_folder_loaded : 1;
   guint complete_on_load : 1;
   guint eat_tabs       : 1;
+  guint eat_escape     : 1;
   guint local_only     : 1;
 };
 
@@ -68,6 +70,14 @@ enum
   FULL_PATH_COLUMN,
   N_COLUMNS
 };
+
+enum
+{
+  HIDE_ENTRY,
+  LAST_SIGNAL
+};
+
+static guint signals[LAST_SIGNAL] = { 0 };
 
 static void     gtk_file_chooser_entry_finalize       (GObject          *object);
 static void     gtk_file_chooser_entry_dispose        (GObject          *object);
@@ -157,6 +167,15 @@ _gtk_file_chooser_entry_class_init (GtkFileChooserEntryClass *class)
 
   widget_class->grab_focus = gtk_file_chooser_entry_grab_focus;
   widget_class->focus_out_event = gtk_file_chooser_entry_focus_out_event;
+
+  signals[HIDE_ENTRY] =
+    g_signal_new (I_("hide-entry"),
+                  G_OBJECT_CLASS_TYPE (gobject_class),
+                  G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
+                  0,
+                  NULL, NULL,
+                  _gtk_marshal_VOID__VOID,
+                  G_TYPE_NONE, 0);
 }
 
 static void
@@ -267,7 +286,8 @@ set_complete_on_load (GtkFileChooserEntry *chooser_entry,
                       gboolean             complete_on_load)
 {
   /* a completion was triggered, but we couldn't do it.
-   * So no text was inserted when pressing tab, so we beep */
+   * So no text was inserted when pressing tab, so we beep
+   */
   if (chooser_entry->complete_on_load && !complete_on_load)
     gtk_widget_error_bell (GTK_WIDGET (chooser_entry));
 
@@ -313,6 +333,14 @@ gtk_file_chooser_get_file_for_text (GtkFileChooserEntry *chooser_entry,
   return file;
 }
 
+static gboolean
+is_directory_shortcut (const char *text)
+{
+  return strcmp (text, ".") == 0 ||
+         strcmp (text, "..") == 0 ||
+         strcmp (text, "~" ) == 0;
+}
+
 static GFile *
 gtk_file_chooser_get_directory_for_text (GtkFileChooserEntry *chooser_entry,
                                          const char *         text)
@@ -324,7 +352,8 @@ gtk_file_chooser_get_directory_for_text (GtkFileChooserEntry *chooser_entry,
   if (file == NULL)
     return NULL;
 
-  if (text[0] == 0 || text[strlen (text) - 1] == G_DIR_SEPARATOR)
+  if (text[0] == 0 || text[strlen (text) - 1] == G_DIR_SEPARATOR ||
+      is_directory_shortcut (text))
     return file;
 
   parent = g_file_get_parent (file);
@@ -395,6 +424,13 @@ gtk_file_chooser_entry_tab_handler (GtkWidget *widget,
 
   chooser_entry = GTK_FILE_CHOOSER_ENTRY (widget);
   editable = GTK_EDITABLE (widget);
+
+  if (event->keyval == GDK_KEY_Escape &&
+      chooser_entry->eat_escape)
+    {
+      g_signal_emit (widget, signals[HIDE_ENTRY], 0);
+      return TRUE;
+    }
 
   if (!chooser_entry->eat_tabs)
     return FALSE;
@@ -708,6 +744,7 @@ delete_text_callback (GtkFileChooserEntry *chooser_entry,
 /**
  * _gtk_file_chooser_entry_new:
  * @eat_tabs: If %FALSE, allow focus navigation with the tab key.
+ * @eat_escape: If %TRUE, capture Escape key presses and emit ::hide-entry
  *
  * Creates a new #GtkFileChooserEntry object. #GtkFileChooserEntry
  * is an internal implementation widget for the GTK+ file chooser
@@ -717,12 +754,14 @@ delete_text_callback (GtkFileChooserEntry *chooser_entry,
  * Returns: the newly created #GtkFileChooserEntry
  **/
 GtkWidget *
-_gtk_file_chooser_entry_new (gboolean       eat_tabs)
+_gtk_file_chooser_entry_new (gboolean eat_tabs,
+                             gboolean eat_escape)
 {
   GtkFileChooserEntry *chooser_entry;
 
   chooser_entry = g_object_new (GTK_TYPE_FILE_CHOOSER_ENTRY, NULL);
   chooser_entry->eat_tabs = (eat_tabs != FALSE);
+  chooser_entry->eat_escape = (eat_escape != FALSE);
 
   return GTK_WIDGET (chooser_entry);
 }
@@ -803,6 +842,8 @@ _gtk_file_chooser_entry_get_file_part (GtkFileChooserEntry *chooser_entry)
   last_slash = strrchr (text, G_DIR_SEPARATOR);
   if (last_slash)
     return last_slash + 1;
+  else if (is_directory_shortcut (text))
+    return "";
   else
     return text;
 }

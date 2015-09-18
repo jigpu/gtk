@@ -20,6 +20,7 @@
 #include "gdkinternals.h"
 #include "gdkprivate-wayland.h"
 
+#include <stdlib.h>
 #include <errno.h>
 
 typedef struct _GdkWaylandEventSource {
@@ -32,7 +33,8 @@ typedef struct _GdkWaylandEventSource {
 static GList *event_sources = NULL;
 
 static gboolean
-gdk_event_source_prepare(GSource *base, gint *timeout)
+gdk_event_source_prepare (GSource *base,
+                          gint    *timeout)
 {
   GdkWaylandEventSource *source = (GdkWaylandEventSource *) base;
   GdkWaylandDisplay *display = (GdkWaylandDisplay *) source->display;
@@ -59,7 +61,7 @@ gdk_event_source_prepare(GSource *base, gint *timeout)
 }
 
 static gboolean
-gdk_event_source_check(GSource *base)
+gdk_event_source_check (GSource *base)
 {
   GdkWaylandEventSource *source = (GdkWaylandEventSource *) base;
 
@@ -71,9 +73,9 @@ gdk_event_source_check(GSource *base)
 }
 
 static gboolean
-gdk_event_source_dispatch(GSource *base,
-			  GSourceFunc callback,
-			  gpointer data)
+gdk_event_source_dispatch (GSource     *base,
+			   GSourceFunc  callback,
+			   gpointer     data)
 {
   GdkWaylandEventSource *source = (GdkWaylandEventSource *) base;
   GdkDisplay *display = source->display;
@@ -109,7 +111,8 @@ static GSourceFuncs wl_glib_source_funcs = {
 };
 
 void
-_gdk_wayland_display_deliver_event (GdkDisplay *display, GdkEvent *event)
+_gdk_wayland_display_deliver_event (GdkDisplay *display,
+                                    GdkEvent   *event)
 {
   GList *node;
 
@@ -160,11 +163,17 @@ _gdk_wayland_display_queue_events (GdkDisplay *display)
   if (source->pfd.revents & G_IO_IN)
     {
       if (wl_display_dispatch (display_wayland->wl_display) < 0)
-        g_error ("Error dispatching display: %s", g_strerror (errno));
+        {
+          g_warning ("Error %d (%s) dispatching to Wayland display.",
+                     errno, g_strerror (errno));
+          exit (1);
+        }
     }
 
   if (source->pfd.revents & (G_IO_ERR | G_IO_HUP))
-    g_error ("Lost connection to wayland compositor");
-
+    {
+      g_warning ("Lost connection to Wayland compositor.");
+      exit (1);
+    }
   source->pfd.revents = 0;
 }

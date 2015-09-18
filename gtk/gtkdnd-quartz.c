@@ -62,6 +62,9 @@ static void gtk_drag_source_site_destroy        (gpointer           data);
 static GtkDragSourceInfo *gtk_drag_get_source_info (GdkDragContext *context,
 						    gboolean        create);
 
+static void gtk_drag_drop_finished (GtkDragSourceInfo *info,
+                                   GtkDragResult      result);
+
 extern GdkDragContext *gdk_quartz_drag_source_context (); /* gdk/quartz/gdkdnd-quartz.c */
 
 struct _GtkDragSourceSite 
@@ -93,7 +96,7 @@ struct _GtkDragSourceInfo
   GdkDragContext    *context;	  /* drag context */
   NSEvent           *nsevent;     /* what started it */
   gint hot_x, hot_y;		  /* Hot spot for drag */
-  GdkPixbuf         *icon_pixbuf;
+  cairo_surface_t   *icon_surface;
   gboolean           success;
   gboolean           delete;
 };
@@ -1159,7 +1162,8 @@ gtk_drag_begin_idle (gpointer arg)
   /* FIXME: If the event isn't a mouse event, use the global cursor position instead */
   point = [info->nsevent locationInWindow];
 
-  drag_image = _gtk_quartz_create_image_from_pixbuf (info->icon_pixbuf);
+  drag_image = _gtk_quartz_create_image_from_surface (info->icon_surface);
+
   if (drag_image == NULL)
     {
       g_object_unref (info->context);
@@ -1167,7 +1171,7 @@ gtk_drag_begin_idle (gpointer arg)
     }
 
   point.x -= info->hot_x;
-  point.y -= info->hot_y;
+  point.y -= [drag_image size].height - info->hot_y;
 
   [nswindow dragImage:drag_image
                    at:point
@@ -1287,7 +1291,7 @@ gtk_drag_begin_internal (GtkWidget         *widget,
    * application may have set one in ::drag_begin, or it may
    * not have set one.
    */
-  if (!info->icon_pixbuf)
+  if (!info->icon_surface)
     {
       if (!site || site->icon_type == GTK_IMAGE_EMPTY)
         gtk_drag_set_icon_default (context);
@@ -1382,6 +1386,23 @@ gtk_drag_begin (GtkWidget         *widget,
 				  actions, button, event, -1, -1);
 }
 
+
+/**
+ * gtk_drag_cancel:
+ * @context: a #GdkDragContext, as e.g. returned by gtk_drag_begin_with_coordinates()
+ *
+ */
+void
+gtk_drag_cancel (GdkDragContext *context)
+{
+  GtkDragSourceInfo *info;
+
+  g_return_if_fail (GDK_IS_DRAG_CONTEXT (context));
+
+  info = gtk_drag_get_source_info (context, FALSE);
+  if (info != NULL)
+    gtk_drag_drop_finished (info, GTK_DRAG_RESULT_ERROR);
+}
 
 static gboolean
 gtk_drag_source_event_cb (GtkWidget      *widget,
@@ -1784,6 +1805,8 @@ set_icon_stock_pixbuf (GdkDragContext    *context,
 		       gint               hot_y)
 {
   GtkDragSourceInfo *info;
+  cairo_surface_t *surface;
+  cairo_t *cr;
 
   info = gtk_drag_get_source_info (context, FALSE);
 
@@ -1801,11 +1824,19 @@ set_icon_stock_pixbuf (GdkDragContext    *context,
   else
     g_object_ref (pixbuf);
 
-  if (info->icon_pixbuf)
-    g_object_unref (info->icon_pixbuf);
-  info->icon_pixbuf = pixbuf;
-  info->hot_x = hot_x;
-  info->hot_y = hot_y;
+  surface = cairo_image_surface_create (CAIRO_FORMAT_ARGB32,
+                                        gdk_pixbuf_get_width (pixbuf),
+                                        gdk_pixbuf_get_height (pixbuf));
+
+  cr = cairo_create (surface);
+  gdk_cairo_set_source_pixbuf (cr, pixbuf, 0, 0);
+  cairo_paint (cr);
+  cairo_destroy (cr);
+  g_object_unref (pixbuf);
+
+  cairo_surface_set_device_offset (surface, -hot_x, -hot_y);
+  gtk_drag_set_icon_surface (context, surface);
+  cairo_surface_destroy (surface);
 }
 
 /**
@@ -1853,44 +1884,6 @@ gtk_drag_set_icon_stock  (GdkDragContext *context,
   set_icon_stock_pixbuf (context, stock_id, NULL, hot_x, hot_y);
 }
 
-
-/* XXX: This function is in gdk, too. Should it be in Cairo? */
-static gboolean
-_gtk_cairo_surface_extents (cairo_surface_t *surface,
-                            GdkRectangle *extents)
-{
-  double x1, x2, y1, y2;
-  cairo_t *cr;
-
-  g_return_val_if_fail (surface != NULL, FALSE);
-  g_return_val_if_fail (extents != NULL, FALSE);
-
-  cr = cairo_create (surface);
-  cairo_clip_extents (cr, &x1, &y1, &x2, &y2);
-
-  x1 = floor (x1);
-  y1 = floor (y1);
-  x2 = ceil (x2);
-  y2 = ceil (y2);
-  x2 -= x1;
-  y2 -= y1;
-  
-  if (x1 < G_MININT || x1 > G_MAXINT ||
-      y1 < G_MININT || y1 > G_MAXINT ||
-      x2 > G_MAXINT || y2 > G_MAXINT)
-    {
-      extents->x = extents->y = extents->width = extents->height = 0;
-      return FALSE;
-    }
-
-  extents->x = x1;
-  extents->y = y1;
-  extents->width = x2;
-  extents->height = y2;
-
-  return TRUE;
-}
-
 /**
  * gtk_drag_set_icon_surface:
  * @context: the context for a drag. (This must be called
@@ -1910,21 +1903,22 @@ void
 gtk_drag_set_icon_surface (GdkDragContext  *context,
                            cairo_surface_t *surface)
 {
-  GdkPixbuf *pixbuf;
-  GdkRectangle extents;
   double x_offset, y_offset;
+  GtkDragSourceInfo *info;
 
   g_return_if_fail (GDK_IS_DRAG_CONTEXT (context));
   g_return_if_fail (surface != NULL);
 
-  _gtk_cairo_surface_extents (surface, &extents);
   cairo_surface_get_device_offset (surface, &x_offset, &y_offset);
+  info = gtk_drag_get_source_info (context, FALSE);
+  cairo_surface_reference (surface);
 
-  pixbuf = gdk_pixbuf_get_from_surface (surface,
-                                        extents.x, extents.y,
-                                        extents.width, extents.height);
-  gtk_drag_set_icon_pixbuf (context, pixbuf, -x_offset, -y_offset);
-  g_object_unref (pixbuf);
+  if (info->icon_surface)
+    cairo_surface_destroy (info->icon_surface);
+
+  info->icon_surface = surface;
+  info->hot_x = -x_offset;
+  info->hot_y = -y_offset;
 }
 
 /**
@@ -2001,8 +1995,8 @@ gtk_drag_source_info_destroy (GtkDragSourceInfo *info)
   NSPasteboard *pasteboard;
   NSAutoreleasePool *pool;
 
-  if (info->icon_pixbuf)
-    g_object_unref (info->icon_pixbuf);
+  if (info->icon_surface)
+    cairo_surface_destroy (info->icon_surface);
 
   g_signal_emit_by_name (info->widget, "drag-end", 
 			 info->context);
@@ -2035,14 +2029,23 @@ gtk_drag_source_info_destroy (GtkDragSourceInfo *info)
 static gboolean
 drag_drop_finished_idle_cb (gpointer data)
 {
-  gtk_drag_source_info_destroy (data);
+  GtkDragSourceInfo* info = (GtkDragSourceInfo*) data;
+  if (info->success)
+    gtk_drag_source_info_destroy (data);
   return G_SOURCE_REMOVE;
 }
 
 static void
-gtk_drag_drop_finished (GtkDragSourceInfo *info)
+gtk_drag_drop_finished (GtkDragSourceInfo *info,
+                        GtkDragResult      result)
 {
-  if (info->success && info->delete)
+  gboolean success = (result == GTK_DRAG_RESULT_SUCCESS);
+
+  if (!success)
+    g_signal_emit_by_name (info->source_widget, "drag-failed",
+                           info->context, result, &success);
+
+  if (success && info->delete)
     g_signal_emit_by_name (info->source_widget, "drag-data-delete",
                            info->context);
 
@@ -2070,6 +2073,7 @@ _gtk_drag_source_handle_event (GtkWidget *widget,
 {
   GtkDragSourceInfo *info;
   GdkDragContext *context;
+  GtkDragResult result;
 
   g_return_if_fail (widget != NULL);
   g_return_if_fail (event != NULL);
@@ -2082,7 +2086,8 @@ _gtk_drag_source_handle_event (GtkWidget *widget,
   switch (event->type)
     {
     case GDK_DROP_FINISHED:
-      gtk_drag_drop_finished (info);
+      result = (gdk_drag_context_get_dest_window (context) != NULL) ? GTK_DRAG_RESULT_SUCCESS : GTK_DRAG_RESULT_NO_TARGET;
+      gtk_drag_drop_finished (info, result);
       break;
     default:
       g_assert_not_reached ();

@@ -324,7 +324,7 @@ gtk_about_dialog_class_init (GtkAboutDialogClass *klass)
    * Since: 2.24
    */
   signals[ACTIVATE_LINK] =
-    g_signal_new ("activate-link",
+    g_signal_new (I_("activate-link"),
                   G_TYPE_FROM_CLASS (object_class),
                   G_SIGNAL_RUN_LAST,
                   G_STRUCT_OFFSET (GtkAboutDialogClass, activate_link),
@@ -787,9 +787,7 @@ gtk_about_dialog_finalize (GObject *object)
   g_strfreev (priv->artists);
 
   g_slist_free_full (priv->credit_sections, destroy_credit_section);
-
-  g_slist_foreach (priv->visited_links, (GFunc)g_free, NULL);
-  g_slist_free (priv->visited_links);
+  g_slist_free_full (priv->visited_links, g_free);
 
   G_OBJECT_CLASS (gtk_about_dialog_parent_class)->finalize (object);
 }
@@ -804,8 +802,8 @@ gtk_about_dialog_realize (GtkWidget *widget)
   GTK_WIDGET_CLASS (gtk_about_dialog_parent_class)->realize (widget);
 
   display = gtk_widget_get_display (widget);
-  priv->hand_cursor = gdk_cursor_new_for_display (display, GDK_HAND2);
-  priv->regular_cursor = gdk_cursor_new_for_display (display, GDK_XTERM);
+  priv->hand_cursor = gdk_cursor_new_from_name (display, "pointer");
+  priv->regular_cursor = gdk_cursor_new_from_name (display, "text");
 }
 
 static void
@@ -1925,14 +1923,13 @@ follow_if_link (GtkAboutDialog *about,
           GtkStateFlags state = gtk_widget_get_state_flags (GTK_WIDGET (about));
           gtk_style_context_get_color (context, state | GTK_STATE_FLAG_VISITED, &visited_link_color);
 
-          g_object_set (G_OBJECT (tag), "foreground-rgba", visited_link_color, NULL);
+          g_object_set (G_OBJECT (tag), "foreground-rgba", &visited_link_color, NULL);
 
           priv->visited_links = g_slist_prepend (priv->visited_links, g_strdup (uri));
         }
     }
 
-  if (tags)
-    g_slist_free (tags);
+  g_slist_free (tags);
 }
 
 static gboolean
@@ -2034,8 +2031,7 @@ set_cursor_if_appropriate (GtkAboutDialog *about,
         gdk_window_set_device_cursor (gtk_text_view_get_window (text_view, GTK_TEXT_WINDOW_TEXT), device, priv->regular_cursor);
     }
 
-  if (tags)
-    g_slist_free (tags);
+  g_slist_free (tags);
 }
 
 static gboolean
@@ -2108,7 +2104,6 @@ text_buffer_new (GtkAboutDialog  *about,
               gchar *link;
               gchar *uri;
               const gchar *link_type;
-              GtkTextTag *tag;
 
               if (*q1 == '<')
                 {
@@ -2288,6 +2283,7 @@ add_credits_section (GtkAboutDialog  *about,
 
       label = gtk_label_new (str->str);
       gtk_label_set_use_markup (GTK_LABEL (label), TRUE);
+      gtk_label_set_selectable (GTK_LABEL (label), TRUE);
       g_signal_connect_swapped (label, "activate-link",
                                 G_CALLBACK (emit_activate_link), about);
       g_string_free (str, TRUE);

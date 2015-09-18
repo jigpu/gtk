@@ -359,6 +359,7 @@ gtk_button_box_set_layout (GtkButtonBox      *widget,
       if (priv->layout_style == GTK_BUTTONBOX_EXPAND)
         {
           gtk_style_context_add_class (gtk_widget_get_style_context (GTK_WIDGET (widget)), "linked");
+          gtk_box_set_spacing (GTK_BOX (widget), 0);
           gtk_box_set_homogeneous (GTK_BOX (widget), TRUE);
         }
       else
@@ -883,7 +884,7 @@ gtk_button_box_size_allocate (GtkWidget     *widget,
       switch (gtk_box_get_baseline_position (GTK_BOX (widget)))
 	{
 	case GTK_BASELINE_POSITION_TOP:
-	  baseline = baseline;
+          /* keep baseline as is */
 	  break;
 	case GTK_BASELINE_POSITION_CENTER:
 	  baseline = baseline + (allocation->height - baseline_height) / 2;
@@ -1132,7 +1133,7 @@ gtk_button_box_size_allocate (GtkWidget     *widget,
 
 /**
  * gtk_button_box_new:
- * @orientation: the box' orientation.
+ * @orientation: the box's orientation.
  *
  * Creates a new #GtkButtonBox.
  *

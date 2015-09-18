@@ -130,9 +130,6 @@ static void             gtk_icon_view_get_property              (GObject        
 static void             gtk_icon_view_destroy                   (GtkWidget          *widget);
 static void             gtk_icon_view_realize                   (GtkWidget          *widget);
 static void             gtk_icon_view_unrealize                 (GtkWidget          *widget);
-static void             gtk_icon_view_style_updated             (GtkWidget          *widget);
-static void             gtk_icon_view_state_flags_changed       (GtkWidget          *widget,
-			                                         GtkStateFlags       previous_state);
 static GtkSizeRequestMode gtk_icon_view_get_request_mode        (GtkWidget          *widget);
 static void             gtk_icon_view_get_preferred_width       (GtkWidget          *widget,
 								 gint               *minimum,
@@ -350,7 +347,6 @@ gtk_icon_view_class_init (GtkIconViewClass *klass)
   widget_class->destroy = gtk_icon_view_destroy;
   widget_class->realize = gtk_icon_view_realize;
   widget_class->unrealize = gtk_icon_view_unrealize;
-  widget_class->style_updated = gtk_icon_view_style_updated;
   widget_class->get_request_mode = gtk_icon_view_get_request_mode;
   widget_class->get_preferred_width = gtk_icon_view_get_preferred_width;
   widget_class->get_preferred_height = gtk_icon_view_get_preferred_height;
@@ -372,7 +368,6 @@ gtk_icon_view_class_init (GtkIconViewClass *klass)
   widget_class->drag_motion = gtk_icon_view_drag_motion;
   widget_class->drag_drop = gtk_icon_view_drag_drop;
   widget_class->drag_data_received = gtk_icon_view_drag_data_received;
-  widget_class->state_flags_changed = gtk_icon_view_state_flags_changed;
 
   container_class->remove = gtk_icon_view_remove;
   container_class->forall = gtk_icon_view_forall;
@@ -1276,7 +1271,6 @@ gtk_icon_view_realize (GtkWidget *widget)
   GdkWindow *window;
   GdkWindowAttr attributes;
   gint attributes_mask;
-  GtkStyleContext *context;
 
   gtk_widget_set_realized (widget, TRUE);
 
@@ -1306,8 +1300,7 @@ gtk_icon_view_realize (GtkWidget *widget)
   attributes.y = 0;
   attributes.width = MAX (icon_view->priv->width, allocation.width);
   attributes.height = MAX (icon_view->priv->height, allocation.height);
-  attributes.event_mask = (GDK_EXPOSURE_MASK |
-                           GDK_SCROLL_MASK |
+  attributes.event_mask = (GDK_SCROLL_MASK |
                            GDK_SMOOTH_SCROLL_MASK |
                            GDK_POINTER_MOTION_MASK |
                            GDK_LEAVE_NOTIFY_MASK |
@@ -1320,11 +1313,6 @@ gtk_icon_view_realize (GtkWidget *widget)
   icon_view->priv->bin_window = gdk_window_new (window,
 						&attributes, attributes_mask);
   gtk_widget_register_window (widget, icon_view->priv->bin_window);
-
-  context = gtk_widget_get_style_context (widget);
-  gtk_style_context_set_background (context, icon_view->priv->bin_window);
-  gtk_style_context_set_background (context, window);
-
   gdk_window_show (icon_view->priv->bin_window);
 }
 
@@ -1340,38 +1328,6 @@ gtk_icon_view_unrealize (GtkWidget *widget)
   icon_view->priv->bin_window = NULL;
 
   GTK_WIDGET_CLASS (gtk_icon_view_parent_class)->unrealize (widget);
-}
-
-static void
-_gtk_icon_view_update_background (GtkIconView *icon_view)
-{
-  GtkWidget *widget = GTK_WIDGET (icon_view);
-
-  if (gtk_widget_get_realized (widget))
-    {
-      GtkStyleContext *context;
-
-      context = gtk_widget_get_style_context (widget);
-      gtk_style_context_set_background (context, gtk_widget_get_window (widget));
-      gtk_style_context_set_background (context, icon_view->priv->bin_window);
-    }
-}
-
-static void
-gtk_icon_view_state_flags_changed (GtkWidget     *widget,
-                                   GtkStateFlags  previous_state)
-{
-  _gtk_icon_view_update_background (GTK_ICON_VIEW (widget));
-  gtk_widget_queue_draw (widget);
-}
-
-static void
-gtk_icon_view_style_updated (GtkWidget *widget)
-{
-  GTK_WIDGET_CLASS (gtk_icon_view_parent_class)->style_updated (widget);
-
-  _gtk_icon_view_update_background (GTK_ICON_VIEW (widget));
-  gtk_widget_queue_resize (widget);
 }
 
 static gint
@@ -1903,7 +1859,7 @@ gtk_icon_view_draw (GtkWidget *widget,
       paint_area.y      = item->cell_area.y      - icon_view->priv->item_padding;
       paint_area.width  = item->cell_area.width  + icon_view->priv->item_padding * 2;
       paint_area.height = item->cell_area.height + icon_view->priv->item_padding * 2;
-      
+
       cairo_save (cr);
 
       cairo_rectangle (cr, paint_area.x, paint_area.y, paint_area.width, paint_area.height);
@@ -1925,10 +1881,7 @@ gtk_icon_view_draw (GtkWidget *widget,
   if (dest_item &&
       dest_pos != GTK_ICON_VIEW_NO_DROP)
     {
-      GtkStyleContext *context;
       GdkRectangle rect = { 0 };
-
-      context = gtk_widget_get_style_context (widget);
 
       switch (dest_pos)
 	{
@@ -4234,9 +4187,6 @@ gtk_icon_view_scroll_to_path (GtkIconView *icon_view,
 
       gtk_adjustment_set_value (icon_view->priv->hadjustment,
                                 gtk_adjustment_get_value (icon_view->priv->hadjustment) + offset);
-
-      gtk_adjustment_changed (icon_view->priv->hadjustment);
-      gtk_adjustment_changed (icon_view->priv->vadjustment);
     }
   else
     gtk_icon_view_scroll_to_item (icon_view, item);
@@ -4282,9 +4232,6 @@ gtk_icon_view_scroll_to_item (GtkIconView     *icon_view,
     gtk_adjustment_animate_to_value (hadj,
                                      gtk_adjustment_get_value (hadj)
                                      + x + item_area.x + item_area.width - allocation.width);
-
-  gtk_adjustment_changed (hadj);
-  gtk_adjustment_changed (vadj);
 }
 
 /* GtkCellLayout implementation */
@@ -6214,8 +6161,7 @@ remove_scroll_timeout (GtkIconView *icon_view)
 }
 
 static void
-gtk_icon_view_autoscroll (GtkIconView *icon_view,
-                          GdkDevice   *device)
+gtk_icon_view_autoscroll (GtkIconView *icon_view)
 {
   GdkWindow *window;
   gint px, py, width, height;
@@ -6223,7 +6169,8 @@ gtk_icon_view_autoscroll (GtkIconView *icon_view,
 
   window = gtk_widget_get_window (GTK_WIDGET (icon_view));
 
-  gdk_window_get_device_position (window, device, &px, &py, NULL);
+  px = icon_view->priv->event_last_x;
+  py = icon_view->priv->event_last_y;
   gdk_window_get_geometry (window, NULL, NULL, &width, &height);
 
   /* see if we are near the edge. */
@@ -6244,25 +6191,12 @@ gtk_icon_view_autoscroll (GtkIconView *icon_view,
                               gtk_adjustment_get_value (icon_view->priv->hadjustment) + hoffset);
 }
 
-typedef struct {
-  GtkIconView *icon_view;
-  GdkDevice   *device;
-} DragScrollData;
-
 static gboolean
-drag_scroll_timeout (gpointer datap)
+drag_scroll_timeout (gpointer data)
 {
-  DragScrollData *data = datap;
-
-  gtk_icon_view_autoscroll (data->icon_view, data->device);
+  gtk_icon_view_autoscroll (data);
 
   return TRUE;
-}
-
-static void
-drag_scroll_data_free (DragScrollData *data)
-{
-  g_slice_free (DragScrollData, data);
 }
 
 static gboolean
@@ -6644,6 +6578,9 @@ gtk_icon_view_drag_motion (GtkWidget      *widget,
   if (!set_destination (icon_view, context, x, y, &suggested_action, &target))
     return FALSE;
 
+  icon_view->priv->event_last_x = x;
+  icon_view->priv->event_last_y = y;
+
   gtk_icon_view_get_drag_dest_item (icon_view, &path, &pos);
 
   /* we only know this *after* set_desination_row */
@@ -6658,12 +6595,8 @@ gtk_icon_view_drag_motion (GtkWidget      *widget,
     {
       if (icon_view->priv->scroll_timeout_id == 0)
 	{
-          DragScrollData *data = g_slice_new (DragScrollData);
-          data->icon_view = icon_view;
-          data->device = gdk_drag_context_get_device (context);
-
 	  icon_view->priv->scroll_timeout_id =
-	    gdk_threads_add_timeout_full (G_PRIORITY_DEFAULT, 50, drag_scroll_timeout, data, (GDestroyNotify) drag_scroll_data_free);
+	    gdk_threads_add_timeout (50, drag_scroll_timeout, icon_view);
 	  g_source_set_name_by_id (icon_view->priv->scroll_timeout_id, "[gtk+] drag_scroll_timeout");
 	}
 

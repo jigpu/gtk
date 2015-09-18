@@ -109,7 +109,6 @@ struct _GtkPanedPrivate
   GtkWidget      *saved_focus;
   GtkOrientation  orientation;
 
-  GdkCursorType  cursor_type;
   GdkRectangle   handle_pos;
   GdkWindow     *handle;
 
@@ -787,7 +786,6 @@ gtk_paned_init (GtkPaned *paned)
   priv = paned->priv;
 
   priv->orientation = GTK_ORIENTATION_HORIZONTAL;
-  priv->cursor_type = GDK_SB_H_DOUBLE_ARROW;
 
   priv->child1 = NULL;
   priv->child2 = NULL;
@@ -841,17 +839,11 @@ gtk_paned_set_property (GObject        *object,
           _gtk_orientable_set_style_classes (GTK_ORIENTABLE (paned));
 
           if (priv->orientation == GTK_ORIENTATION_HORIZONTAL)
-            {
-              priv->cursor_type = GDK_SB_H_DOUBLE_ARROW;
-              gtk_gesture_pan_set_orientation (GTK_GESTURE_PAN (priv->pan_gesture),
-                                               GTK_ORIENTATION_HORIZONTAL);
-            }
+            gtk_gesture_pan_set_orientation (GTK_GESTURE_PAN (priv->pan_gesture),
+                                             GTK_ORIENTATION_HORIZONTAL);
           else
-            {
-              priv->cursor_type = GDK_SB_V_DOUBLE_ARROW;
-              gtk_gesture_pan_set_orientation (GTK_GESTURE_PAN (priv->pan_gesture),
-                                               GTK_ORIENTATION_VERTICAL);
-            }
+            gtk_gesture_pan_set_orientation (GTK_GESTURE_PAN (priv->pan_gesture),
+                                             GTK_ORIENTATION_VERTICAL);
 
           /* state_flags_changed updates the cursor */
           gtk_paned_state_flags_changed (GTK_WIDGET (paned), 0);
@@ -1182,9 +1174,9 @@ gtk_paned_get_preferred_size (GtkWidget      *widget,
   GtkPanedPrivate *priv = paned->priv;
 
   if (orientation == priv->orientation)
-    return gtk_paned_get_preferred_size_for_orientation (widget, size, minimum, natural);
+    gtk_paned_get_preferred_size_for_orientation (widget, size, minimum, natural);
   else
-    return gtk_paned_get_preferred_size_for_opposite_orientation (widget, size, minimum, natural);
+    gtk_paned_get_preferred_size_for_opposite_orientation (widget, size, minimum, natural);
 }
 
 static void
@@ -1534,7 +1526,7 @@ gtk_paned_create_child_window (GtkPaned  *paned,
 
   attributes.window_type = GDK_WINDOW_CHILD;
   attributes.wclass = GDK_INPUT_OUTPUT;
-  attributes.event_mask = gtk_widget_get_events (widget) | GDK_EXPOSURE_MASK;
+  attributes.event_mask = gtk_widget_get_events (widget);
   attributes.visual = gtk_widget_get_visual (widget);
   if (child)
     {
@@ -1572,7 +1564,6 @@ gtk_paned_create_child_window (GtkPaned  *paned,
   window = gdk_window_new (gtk_widget_get_window (widget),
                            &attributes, attributes_mask);
   gtk_widget_register_window (widget, window);
-  gtk_style_context_set_background (gtk_widget_get_style_context (widget), window);
 
   if (child)
     gtk_widget_set_parent_window (child, window);
@@ -1610,8 +1601,9 @@ gtk_paned_realize (GtkWidget *widget)
   attributes_mask = GDK_WA_X | GDK_WA_Y;
   if (gtk_widget_is_sensitive (widget))
     {
-      attributes.cursor = gdk_cursor_new_for_display (gtk_widget_get_display (widget),
-						      priv->cursor_type);
+      attributes.cursor = gdk_cursor_new_from_name (gtk_widget_get_display (widget),
+						    priv->orientation == GTK_ORIENTATION_HORIZONTAL
+                                                    ? "col-resize" : "row-resize");
       attributes_mask |= GDK_WA_CURSOR;
     }
 
@@ -1698,12 +1690,19 @@ gtk_paned_draw (GtkWidget *widget,
 {
   GtkPaned *paned = GTK_PANED (widget);
   GtkPanedPrivate *priv = paned->priv;
+  GtkStyleContext *context = gtk_widget_get_style_context (widget);
+  GtkAllocation allocation;
+
+  gtk_widget_get_allocation (widget, &allocation);
+  gtk_render_background (context, cr,
+                         0, 0,
+                         allocation.width, allocation.height);
 
   if (gtk_cairo_should_draw_window (cr, priv->child1_window))
     {
       cairo_save (cr);
       gtk_cairo_transform_to_window (cr, widget, priv->child1_window);
-      gtk_render_background (gtk_widget_get_style_context (widget),
+      gtk_render_background (context,
                              cr,
                              0, 0,
                              gdk_window_get_width (priv->child1_window),
@@ -1715,7 +1714,7 @@ gtk_paned_draw (GtkWidget *widget,
     {
       cairo_save (cr);
       gtk_cairo_transform_to_window (cr, widget, priv->child2_window);
-      gtk_render_background (gtk_widget_get_style_context (widget),
+      gtk_render_background (context,
                              cr,
                              0, 0,
                              gdk_window_get_width (priv->child2_window),
@@ -1727,12 +1726,8 @@ gtk_paned_draw (GtkWidget *widget,
       priv->child1 && gtk_widget_get_visible (priv->child1) &&
       priv->child2 && gtk_widget_get_visible (priv->child2))
     {
-      GtkStyleContext *context;
       GtkStateFlags state;
-      GtkAllocation allocation;
 
-      gtk_widget_get_allocation (widget, &allocation);
-      context = gtk_widget_get_style_context (widget);
       state = gtk_widget_get_state_flags (widget);
 
       if (gtk_widget_is_focus (widget))
@@ -1882,8 +1877,9 @@ gtk_paned_state_flags_changed (GtkWidget     *widget,
   if (gtk_widget_get_realized (widget))
     {
       if (gtk_widget_is_sensitive (widget))
-        cursor = gdk_cursor_new_for_display (gtk_widget_get_display (widget),
-                                             priv->cursor_type);
+        cursor = gdk_cursor_new_from_name (gtk_widget_get_display (widget),
+                                           priv->orientation == GTK_ORIENTATION_HORIZONTAL
+                                           ? "col-resize" : "row-resize");
       else
         cursor = NULL;
 
@@ -2445,7 +2441,7 @@ gtk_paned_get_cycle_chain (GtkPaned          *paned,
   /* Walk the list and expand all the paned widgets. */
   for (list = temp_list; list != NULL; list = list->next)
     {
-      GtkWidget *widget = list->data;
+      widget = list->data;
 
       if (widget)
 	{
@@ -2773,7 +2769,6 @@ gtk_paned_cycle_handle_focus (GtkPaned *paned,
       GtkContainer *container = GTK_CONTAINER (paned);
       GtkPaned *focus;
       GtkPaned *first;
-      GtkPaned *prev, *next;
       GtkWidget *toplevel;
       GtkWidget *focus_child;
 

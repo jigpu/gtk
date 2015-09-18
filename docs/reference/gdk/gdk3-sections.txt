@@ -668,6 +668,7 @@ gdk_keymap_get_direction
 gdk_keymap_have_bidi_layouts
 gdk_keymap_get_caps_lock_state
 gdk_keymap_get_num_lock_state
+gdk_keymap_get_scroll_lock_state
 gdk_keymap_get_modifier_state
 gdk_keymap_add_virtual_modifiers
 gdk_keymap_map_virtual_modifiers
@@ -713,6 +714,8 @@ GdkGrabOwnership
 
 <SUBSECTION>
 gdk_device_get_name
+gdk_device_get_vendor_id
+gdk_device_get_product_id
 gdk_device_get_source
 gdk_device_set_mode
 gdk_device_get_mode
@@ -885,6 +888,8 @@ GdkEventWindowState
 GdkEventSetting
 GdkEventOwnerChange
 GdkEventGrabBroken
+GdkEventTouchpadSwipe
+GdkEventTouchpadPinch
 
 <SUBSECTION>
 GdkScrollDirection
@@ -1291,12 +1296,25 @@ gdk_frame_get_type
 <SECTION>
 <FILE>gdkglcontext</FILE>
 GdkGLContext
+gdk_gl_context_get_display
 gdk_gl_context_get_window
-gdk_gl_context_make_current
-gdk_gl_context_clear_current
-gdk_gl_context_get_current
-GdkGLProfile
+gdk_gl_context_get_shared_context
+gdk_gl_context_get_version
+
+<SUBSECTION>
+gdk_gl_context_set_required_version
+gdk_gl_context_get_required_version
+gdk_gl_context_set_debug_enabled
+gdk_gl_context_get_debug_enabled
+gdk_gl_context_set_forward_compatible
+gdk_gl_context_get_forward_compatible
+
+<SUBSECTION>
 GdkGLError
+gdk_gl_context_realize
+gdk_gl_context_make_current
+gdk_gl_context_get_current
+gdk_gl_context_clear_current
 
 <SUBSECTION Standard>
 GDK_GL_CONTEXT

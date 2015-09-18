@@ -75,7 +75,23 @@ typedef struct _GdkPoint              GdkPoint;
  * Defines the position and size of a rectangle. It is identical to
  * #cairo_rectangle_int_t.
  */
+#ifdef __GI_SCANNER__
+/* The introspection scanner is currently unable to lookup how
+ * cairo_rectangle_int_t is actually defined. This prevents
+ * introspection data for the GdkRectangle type to include fields
+ * descriptions. To workaround this issue, we define it with the same
+ * content as cairo_rectangle_int_t, but only under the introspection
+ * define.
+ */
+struct _GdkRectangle
+{
+    int x, y;
+    int width, height;
+};
+typedef struct _GdkRectangle          GdkRectangle;
+#else
 typedef cairo_rectangle_int_t         GdkRectangle;
+#endif
 
 /**
  * GdkAtom:
@@ -207,6 +223,10 @@ typedef enum
  * reserved values such as %GDK_MODIFIER_RESERVED_13_MASK.  Your code
  * should preserve and ignore them.  You can use %GDK_MODIFIER_MASK to
  * remove all reserved values.
+ *
+ * Also note that the GDK X backend interprets button press events for button
+ * 4-7 as scroll events, so %GDK_BUTTON4_MASK and %GDK_BUTTON5_MASK will never
+ * be set.
  */
 typedef enum
 {
@@ -271,6 +291,11 @@ typedef enum
  *  input methods, and for use cases like typeahead search.
  * @GDK_MODIFIER_INTENT_SHIFT_GROUP: the modifier that switches between keyboard
  *  groups (AltGr on X11/Windows and Option/Alt on OS X).
+ * @GDK_MODIFIER_INTENT_DEFAULT_MOD_MASK: The set of modifier masks accepted
+ * as modifiers in accelerators. Needed because Command is mapped to MOD2 on
+ * OSX, which is widely used, but on X11 MOD2 is NumLock and using that for a
+ * mod key is problematic at best.
+ * Ref: https://bugzilla.gnome.org/show_bug.cgi?id=736125.
  *
  * This enum is used with gdk_keymap_get_modifier_mask()
  * in order to determine what modifiers the
@@ -289,7 +314,8 @@ typedef enum
   GDK_MODIFIER_INTENT_EXTEND_SELECTION,
   GDK_MODIFIER_INTENT_MODIFY_SELECTION,
   GDK_MODIFIER_INTENT_NO_TEXT_INPUT,
-  GDK_MODIFIER_INTENT_SHIFT_GROUP
+  GDK_MODIFIER_INTENT_SHIFT_GROUP,
+  GDK_MODIFIER_INTENT_DEFAULT_MOD_MASK,
 } GdkModifierIntent;
 
 typedef enum
@@ -372,6 +398,9 @@ typedef enum
  * Most of these masks map onto one or more of the #GdkEventType event types
  * above.
  *
+ * See the [input handling overview][chap-input-handling] for details of
+ * [event masks][event-masks] and [event propagation][event-propagation].
+ *
  * %GDK_POINTER_MOTION_HINT_MASK is deprecated. It is a special mask
  * to reduce the number of %GDK_MOTION_NOTIFY events received. When using
  * %GDK_POINTER_MOTION_HINT_MASK, fewer %GDK_MOTION_NOTIFY events will
@@ -417,6 +446,7 @@ typedef enum
   GDK_SCROLL_MASK               = 1 << 21,
   GDK_TOUCH_MASK                = 1 << 22,
   GDK_SMOOTH_SCROLL_MASK        = 1 << 23,
+  GDK_TOUCHPAD_GESTURE_MASK     = 1 << 24,
   GDK_ALL_EVENTS_MASK           = 0xFFFFFE
 } GdkEventMask;
 
@@ -434,19 +464,15 @@ struct _GdkPoint
 };
 
 /**
- * GdkGLProfile:
- * @GDK_GL_PROFILE_DEFAULT: ...
- * @GDK_GL_PROFILE_LEGACY: ...
- * @GDK_GL_PROFILE_3_2_CORE: ...
+ * GdkGLError:
+ * @GDK_GL_ERROR_NOT_AVAILABLE: OpenGL support is not available
+ * @GDK_GL_ERROR_UNSUPPORTED_FORMAT: The requested visual format is not supported
+ * @GDK_GL_ERROR_UNSUPPORTED_PROFILE: The requested profile is not supported
  *
- * ...
+ * Error enumeration for #GdkGLContext.
+ *
+ * Since: 3.16
  */
-typedef enum {
-  GDK_GL_PROFILE_DEFAULT,
-  GDK_GL_PROFILE_LEGACY,
-  GDK_GL_PROFILE_3_2_CORE
-} GdkGLProfile;
-
 typedef enum {
   GDK_GL_ERROR_NOT_AVAILABLE,
   GDK_GL_ERROR_UNSUPPORTED_FORMAT,

@@ -32,16 +32,14 @@
 #include "deprecated/gtkstyle.h"
 
 
-#ifndef G_DISABLE_CHECKS
+#ifdef G_ENABLE_CONSISTENCY_CHECKS
 static GQuark recursion_check_quark = 0;
-#endif /* G_DISABLE_CHECKS */
 
 static void
 push_recursion_check (GtkWidget       *widget,
                       GtkOrientation   orientation,
                       gint             for_size)
 {
-#ifndef G_DISABLE_CHECKS
   const char *previous_method;
   const char *method;
 
@@ -71,17 +69,18 @@ push_recursion_check (GtkWidget       *widget,
     }
 
   g_object_set_qdata (G_OBJECT (widget), recursion_check_quark, (char*) method);
-#endif /* G_DISABLE_CHECKS */
 }
 
 static void
 pop_recursion_check (GtkWidget       *widget,
                      GtkOrientation   orientation)
 {
-#ifndef G_DISABLE_CHECKS
   g_object_set_qdata (G_OBJECT (widget), recursion_check_quark, NULL);
-#endif
 }
+#else
+#define push_recursion_check(widget, orientation, for_size)
+#define pop_recursion_check(widget, orientation)
+#endif /* G_ENABLE_CONSISTENCY_CHECKS */
 
 static const char *
 get_vfunc_name (GtkOrientation orientation,
@@ -372,7 +371,7 @@ gtk_widget_compute_size_for_orientation (GtkWidget        *widget,
   gpointer key;
   gint    min_result = 0, nat_result = 0;
 
-  if (!gtk_widget_get_visible (widget) && !gtk_widget_is_toplevel (widget))
+  if (!_gtk_widget_get_visible (widget) && !_gtk_widget_is_toplevel (widget))
     {
       if (minimum)
         *minimum = 0;
@@ -447,11 +446,9 @@ gtk_widget_get_request_mode (GtkWidget *widget)
 {
   SizeRequestCache *cache;
 
-  g_return_val_if_fail (GTK_IS_WIDGET (widget), GTK_SIZE_REQUEST_CONSTANT_SIZE);
-
   cache = _gtk_widget_peek_request_cache (widget);
 
-  if (!cache->request_mode_valid)
+  if (G_UNLIKELY (!cache->request_mode_valid))
     {
       cache->request_mode = GTK_WIDGET_GET_CLASS (widget)->get_request_mode (widget);
       cache->request_mode_valid = TRUE;

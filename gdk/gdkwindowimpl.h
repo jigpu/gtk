@@ -198,6 +198,7 @@ struct _GdkWindowImplClass
   void         (* maximize)             (GdkWindow *window);
   void         (* unmaximize)           (GdkWindow *window);
   void         (* fullscreen)           (GdkWindow *window);
+  void         (* fullscreen_on_monitor) (GdkWindow *window, gint monitor);
   void         (* apply_fullscreen_mode) (GdkWindow *window);
   void         (* unfullscreen)         (GdkWindow *window);
   void         (* set_keep_above)       (GdkWindow *window,
@@ -293,8 +294,10 @@ struct _GdkWindowImplClass
                                            GdkEvent       *event);
   GdkGLContext *(*create_gl_context)      (GdkWindow      *window,
 					   gboolean        attached,
-                                           GdkGLProfile    profile,
                                            GdkGLContext   *share,
+                                           GError        **error);
+  gboolean     (* realize_gl_context)     (GdkWindow      *window,
+                                           GdkGLContext   *context,
                                            GError        **error);
   void         (*invalidate_for_new_frame)(GdkWindow      *window,
                                            cairo_region_t *update_area);
@@ -302,7 +305,6 @@ struct _GdkWindowImplClass
 
 /* Interface Functions */
 GType gdk_window_impl_get_type (void) G_GNUC_CONST;
-
 
 G_END_DECLS
 

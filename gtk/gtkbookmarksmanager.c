@@ -507,6 +507,7 @@ _gtk_bookmarks_manager_set_bookmark_label (GtkBookmarksManager *manager,
 
   g_return_val_if_fail (manager != NULL, FALSE);
   g_return_val_if_fail (file != NULL, FALSE);
+  g_return_val_if_fail (g_utf8_validate (label, -1, NULL), FALSE);
 
   link = find_bookmark_link_for_file (manager->bookmarks, file, NULL);
   if (link)
